@@ -61,7 +61,7 @@ async def test_state_and_level_sweep():
             await asyncio.sleep(0.04)
 
         # Read back level events
-        for _ in range(12):
+        for _ in range(25):
             try:
                 raw = await asyncio.wait_for(ws.recv(), timeout=0.1)
                 data = json.loads(raw)

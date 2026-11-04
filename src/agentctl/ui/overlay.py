@@ -12,10 +12,12 @@ from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 # Add orb_assets to sys.path so orb_widget and orb_motion import cleanly
 from agentctl.config import (
     ASSETS_DIR,
+    AUDIO_LEVEL_CUTOFF,
     FULLSCREEN_OVERLAY,
     LEVEL_SEND_RATE_HZ,
     ORB_ASSETS_DIR,
     ORB_SIZE,
+    SILENCE_CUTOFF_MS,
     USE_FAKE_LEVEL,
 )
 
@@ -77,7 +79,7 @@ class SttWorker(threading.Thread):
         self._is_transcribing = False
         self._partial_thread: Optional[threading.Thread] = None
         self.mic = MicrophoneStream()
-        self.vad = SilenceAccumulator(silence_threshold_ms=1400, calibration_frames=22)
+        self.vad = SilenceAccumulator(silence_threshold_ms=SILENCE_CUTOFF_MS, calibration_frames=22)
         self.engine = SttEngine(model_size="base.en", cpu_threads=2)
 
     def run(self):
@@ -101,10 +103,13 @@ class SttWorker(threading.Thread):
                 continue
 
             intensity = SttEngine.calculate_rms_intensity(frame)
+            # Cut off sub-threshold ambient room tone / microphone hiss
+            if intensity < AUDIO_LEVEL_CUTOFF:
+                intensity = 0.0
             self.on_intensity(intensity)
 
             now = time.time()
-            # Forward mic level to daemon at ~30 Hz (item 4)
+            # Forward mic level to daemon at configured rate (default 50 Hz)
             if now - last_level_push >= level_interval:
                 if self.ws_client:
                     self.ws_client.send_level(intensity)

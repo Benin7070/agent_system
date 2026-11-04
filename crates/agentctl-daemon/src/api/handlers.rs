@@ -260,9 +260,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         }
     });
 
-    // Write task: sends state changes immediately, and sends level at ~30 Hz (33ms ticker)
+    // Write task: sends state changes immediately, and sends level at ~50 Hz (20ms ticker)
     let mut write_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(33));
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(20));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
