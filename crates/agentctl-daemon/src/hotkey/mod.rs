@@ -141,11 +141,73 @@ pub async fn spawn_overlay(
 
     #[cfg(not(test))]
     {
+        use std::os::unix::process::CommandExt;
+
         let python = resolve_python_path();
         tracing::info!("Spawning overlay UI with Python: {}", python.display());
 
         let mut cmd = tokio::process::Command::new(&python);
         cmd.arg("-m").arg("agentctl.ui.overlay");
+
+        // 1. Identify the desktop user and environment if running under sudo / root
+        let is_root = unsafe { libc::getuid() } == 0;
+        let (target_uid, target_gid, target_user, target_home) = if is_root {
+            if let Ok(sudo_user) = std::env::var("SUDO_USER") {
+                let uid = std::env::var("SUDO_UID")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(1000);
+                let gid = std::env::var("SUDO_GID")
+                    .ok()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(uid);
+                let home = std::env::var("HOME")
+                    .ok()
+                    .filter(|h| h != "/root")
+                    .unwrap_or_else(|| format!("/home/{}", sudo_user));
+                (Some(uid), Some(gid), Some(sudo_user), Some(home))
+            } else {
+                (None, None, None, None)
+            }
+        } else {
+            (None, None, None, None)
+        };
+
+        // 2. Drop privileges to desktop user if running as root
+        if let (Some(uid), Some(gid)) = (target_uid, target_gid) {
+            cmd.as_std_mut().uid(uid).gid(gid);
+            if let Some(ref u) = target_user {
+                cmd.env("USER", u);
+                cmd.env("LOGNAME", u);
+            }
+            if let Some(ref h) = target_home {
+                cmd.env("HOME", h);
+            }
+        }
+
+        // 3. Ensure display environment variables are properly wired
+        let uid_for_runtime = target_uid.unwrap_or_else(|| unsafe { libc::getuid() });
+        let default_runtime = format!("/run/user/{}", uid_for_runtime);
+        let runtime_path = PathBuf::from(&default_runtime);
+
+        if std::env::var("XDG_RUNTIME_DIR").is_err() || is_root {
+            cmd.env("XDG_RUNTIME_DIR", &default_runtime);
+        }
+
+        if std::env::var("WAYLAND_DISPLAY").is_err() || is_root {
+            if runtime_path.join("wayland-1").exists() {
+                cmd.env("WAYLAND_DISPLAY", "wayland-1");
+            } else if runtime_path.join("wayland-0").exists() {
+                cmd.env("WAYLAND_DISPLAY", "wayland-0");
+            }
+        }
+
+        if std::env::var("DISPLAY").is_err() || is_root {
+            cmd.env("DISPLAY", ":1");
+        }
+
+        // Explicitly prefer Wayland platform plugin
+        cmd.env("QT_QPA_PLATFORM", "wayland;xcb");
 
         if let Ok(mut dir) = std::env::current_dir() {
             loop {

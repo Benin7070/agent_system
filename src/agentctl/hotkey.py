@@ -20,8 +20,10 @@ def handle_hotkey_press():
 
         if state == "IDLE":
             print("[Hotkey] State is IDLE -> Activating Overlay")
+            env = os.environ.copy()
+            env.setdefault("QT_QPA_PLATFORM", "wayland;xcb")
             # Spawn overlay UI subprocess
-            OVERLAY_PROCESS = subprocess.Popen([sys.executable, "-m", "agentctl.ui.overlay"])
+            OVERLAY_PROCESS = subprocess.Popen([sys.executable, "-m", "agentctl.ui.overlay"], env=env)
         else:
             print(f"[Hotkey] State is {state} -> Cancelling")
             client.cancel()

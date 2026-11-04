@@ -5,6 +5,9 @@ import threading
 import time
 from typing import Optional
 
+if "QT_QPA_PLATFORM" not in os.environ:
+    os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
+
 from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QGuiApplication, QKeyEvent, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
