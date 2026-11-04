@@ -9,6 +9,8 @@ pub enum FsmState {
     AwaitingApproval,
     Executing,
     Cancelling,
+    Speaking,
+    Denied,
 }
 
 impl FsmState {
@@ -20,6 +22,22 @@ impl FsmState {
             Self::AwaitingApproval => "AWAITING_APPROVAL",
             Self::Executing => "EXECUTING",
             Self::Cancelling => "CANCELLING",
+            Self::Speaking => "SPEAKING",
+            Self::Denied => "DENIED",
+        }
+    }
+
+    /// Maps the internal FSM state to the UI wire state name expected by OrbWidget.
+    pub fn to_ui_state(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Listening => "listening",
+            Self::Processing => "thinking",
+            Self::AwaitingApproval => "confirm",
+            Self::Speaking => "speaking",
+            Self::Denied => "denied",
+            Self::Executing => "thinking",
+            Self::Cancelling => "closing",
         }
     }
 }
