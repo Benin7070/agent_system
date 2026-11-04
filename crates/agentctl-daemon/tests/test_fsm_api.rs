@@ -86,11 +86,11 @@ async fn test_api_activate_status_and_cancel_endpoints() {
     let audit = AuditLog::new(pool);
     audit.init().await.unwrap();
 
-    let state = Arc::new(AppState {
-        fsm: OrchestratorFsm::new(),
-        gate: ApprovalGate::new(),
+    let state = Arc::new(AppState::new(
+        OrchestratorFsm::new(),
+        ApprovalGate::new(),
         audit,
-    });
+    ));
 
     let app = create_router(state);
 

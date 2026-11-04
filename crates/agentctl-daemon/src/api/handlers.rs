@@ -6,15 +6,36 @@ use crate::core::schemas::{
 };
 use crate::fsm::states::FsmState;
 use crate::fsm::OrchestratorFsm;
-use axum::{extract::State, Json};
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
+    Json,
+};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::sync::Arc;
+use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct AppState {
     pub fsm: OrchestratorFsm,
     pub gate: ApprovalGate,
     pub audit: AuditLog,
+    pub level_tx: watch::Sender<f32>,
+}
+
+impl AppState {
+    pub fn new(fsm: OrchestratorFsm, gate: ApprovalGate, audit: AuditLog) -> Self {
+        let (level_tx, _) = watch::channel(0.0f32);
+        Self {
+            fsm,
+            gate,
+            audit,
+            level_tx,
+        }
+    }
 }
 
 pub async fn activate_handler(
@@ -180,5 +201,97 @@ pub async fn kill_handler(
             )))
         }
         Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LevelRequest {
+    pub value: f32,
+}
+
+pub async fn level_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<LevelRequest>,
+) -> Json<ApiResponse<()>> {
+    let _ = state.level_tx.send(payload.value.clamp(0.0, 1.0));
+    Json(ApiResponse::success(()))
+}
+
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Response {
+    ws.on_upgrade(|socket| handle_socket(socket, state))
+}
+
+async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
+    let (mut sender, mut receiver) = socket.split();
+
+    // 1. Send initial state immediately upon connection
+    let initial_state = state.fsm.get_state().await.to_ui_state();
+    let init_msg = json!({
+        "type": "state",
+        "state": initial_state
+    });
+    if sender
+        .send(Message::Text(init_msg.to_string()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut state_rx = state.fsm.subscribe_state();
+    let mut level_rx = state.level_tx.subscribe();
+
+    // Spawn reader task to handle incoming client messages (e.g., client level pushes or pings)
+    let state_clone = state.clone();
+    let mut read_task = tokio::spawn(async move {
+        while let Some(Ok(msg)) = receiver.next().await {
+            if let Message::Text(text) = msg {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if val.get("type").and_then(|t| t.as_str()) == Some("level") {
+                        if let Some(lvl) = val.get("value").and_then(|v| v.as_f64()) {
+                            let _ = state_clone.level_tx.send((lvl as f32).clamp(0.0, 1.0));
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Write task: sends state changes immediately, and sends level at ~30 Hz (33ms ticker)
+    let mut write_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(33));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                Ok(new_state) = state_rx.recv() => {
+                    let msg = json!({
+                        "type": "state",
+                        "state": new_state.to_ui_state()
+                    });
+                    if sender.send(Message::Text(msg.to_string())).await.is_err() {
+                        break;
+                    }
+                }
+                _ = interval.tick() => {
+                    let val = *level_rx.borrow_and_update();
+                    let msg = json!({
+                        "type": "level",
+                        "value": val
+                    });
+                    if sender.send(Message::Text(msg.to_string())).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = (&mut read_task) => write_task.abort(),
+        _ = (&mut write_task) => read_task.abort(),
     }
 }

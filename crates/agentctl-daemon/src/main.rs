@@ -73,11 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gate = ApprovalGate::new();
     let fsm = OrchestratorFsm::new();
 
-    let state = Arc::new(AppState {
-        fsm,
-        gate,
-        audit,
-    });
+    let state = Arc::new(AppState::new(fsm, gate, audit));
 
     tracing::info!("AgentCTL Daemon listening on UDS: {}", socket_path.display());
     println!("AgentCTL Daemon running on {}", socket_path.display());
