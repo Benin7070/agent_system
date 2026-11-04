@@ -2,10 +2,16 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "orb_assets"))
-from orb_motion import DENIED_SECONDS, OrbMotion  # noqa: E402
+HERE = Path(__file__).resolve().parent
+ORB_DIR = HERE.parent
+ASSETS = ORB_DIR / "assets"
+META = ASSETS / "orb_meta.json"
 
-META = Path(__file__).resolve().parent.parent / "orb_assets" / "orb_meta.json"
+try:
+    from agentctl.ui.orb.motion import DENIED_SECONDS, OrbMotion
+except ImportError:
+    sys.path.insert(0, str(ORB_DIR))
+    from motion import DENIED_SECONDS, OrbMotion  # type: ignore # noqa: E402
 DT = 1 / 60
 
 

@@ -7,12 +7,19 @@ import sys
 import time
 from pathlib import Path
 
-assets = Path(sys.argv[1]).resolve()
-sys.path.insert(0, str(assets))
+HERE = Path(__file__).resolve().parent
+ORB_DIR = HERE.parent
+DEFAULT_ASSETS = ORB_DIR / "assets"
 
-from PyQt6.QtWidgets import QApplication  # noqa: E402
+assets = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_ASSETS
 
-from orb_widget import OrbWidget  # noqa: E402
+from PyQt6.QtWidgets import QApplication
+
+try:
+    from agentctl.ui.orb.widget import OrbWidget
+except ImportError:
+    sys.path.insert(0, str(ORB_DIR))
+    from widget import OrbWidget  # type: ignore # noqa: E402
 
 OrbWidget.configure_format()
 app = QApplication(sys.argv)

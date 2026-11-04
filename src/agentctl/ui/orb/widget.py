@@ -26,7 +26,10 @@ from PyQt6.QtOpenGL import (
 )
 from PyQt6.QtOpenGLWidgets import QOpenGLWidget
 
-from orb_motion import OrbMotion
+try:
+    from agentctl.ui.orb.motion import OrbMotion
+except ImportError:
+    from orb_motion import OrbMotion  # type: ignore
 
 GL_COLOR_BUFFER_BIT = 0x4000
 GL_TRIANGLE_STRIP = 0x0005
@@ -48,9 +51,11 @@ class OrbWidget(QOpenGLWidget):
     closed = pyqtSignal()        # emitted when the closing animation has finished
     opened = pyqtSignal()        # emitted when the opening effects have finished
 
-    def __init__(self, assets_dir: str | Path, parent=None, orb_size: int = 240,
+    def __init__(self, assets_dir: str | Path | None = None, parent=None, orb_size: int = 240,
                  version_header: str = DEFAULT_HEADER, start_visible: bool = True):
         super().__init__(parent)
+        if assets_dir is None:
+            assets_dir = Path(__file__).resolve().parent / "assets"
         self.assets = Path(assets_dir)
         self.header = version_header
         self.motion = OrbMotion(self.assets / "orb_meta.json", visible=start_visible)

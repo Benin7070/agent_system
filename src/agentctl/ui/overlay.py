@@ -9,7 +9,6 @@ from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, pyqtSign
 from PyQt6.QtGui import QColor, QGuiApplication, QKeyEvent, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
-# Add orb_assets to sys.path so orb_widget and orb_motion import cleanly
 from agentctl.config import (
     ASSETS_DIR,
     AUDIO_LEVEL_CUTOFF,
@@ -21,11 +20,6 @@ from agentctl.config import (
     USE_FAKE_LEVEL,
 )
 
-if str(ORB_ASSETS_DIR) not in sys.path:
-    sys.path.insert(0, str(ORB_ASSETS_DIR))
-
-from orb_widget import OrbWidget
-
 from agentctl.client.daemon import DaemonClient
 from agentctl.client.ws import DaemonWsClient
 from agentctl.logger import logger
@@ -33,6 +27,7 @@ from agentctl.stt.engine import SttEngine
 from agentctl.stt.microphone import MicrophoneStream
 from agentctl.stt.vad import SilenceAccumulator
 from agentctl.ui.border_widget import BorderWidget
+from agentctl.ui.orb import OrbWidget
 from agentctl.ui.screens import get_active_screen
 from agentctl.ui.transcript import TranscriptCard
 

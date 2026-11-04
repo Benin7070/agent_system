@@ -24,10 +24,10 @@ less GPU than live blurring. Follow this README where it differs from the task p
 ## Public API (`OrbWidget`)
 
 ```python
-from orb_widget import OrbWidget
+from agentctl.ui.orb import OrbWidget
 OrbWidget.configure_format()            # once, BEFORE QApplication is created
 app = QApplication(sys.argv)
-orb = OrbWidget("path/to/orb_assets", orb_size=240)   # orb diameter in logical pixels
+orb = OrbWidget(orb_size=240)           # orb diameter in logical pixels (assets resolved automatically)
 orb.set_state("listening")   # idle | listening | thinking | speaking | confirm | denied
 orb.set_level(0.4)           # 0..1; send the latest value ~30x per second
 orb.play_opening()           # pop-in + ring + sparks, then the current state continues

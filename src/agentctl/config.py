@@ -15,7 +15,8 @@ USE_FAKE_LEVEL: bool = os.environ.get("AGENTCTL_FAKE_LEVEL", "0") in ("1", "true
 TARGET_SCREEN: str = os.environ.get("AGENTCTL_SCREEN", "").strip()
 
 # Asset paths
-ORB_ASSETS_DIR: Path = Path(os.environ.get("AGENTCTL_ORB_ASSETS", REPO_ROOT / "orb" / "orb_assets"))
+ORB_DIR: Path = REPO_ROOT / "src" / "agentctl" / "ui" / "orb"
+ORB_ASSETS_DIR: Path = Path(os.environ.get("AGENTCTL_ORB_ASSETS", ORB_DIR / "assets"))
 ASSETS_DIR: Path = Path(os.environ.get("AGENTCTL_ASSETS", REPO_ROOT / "src" / "agentctl" / "ui" / "assets"))
 
 # Socket & WebSocket configuration

@@ -13,14 +13,20 @@ from PyQt6.QtWidgets import (QApplication, QCheckBox, QHBoxLayout, QLabel, QPush
                              QVBoxLayout, QWidget)
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-from orb_motion import STATES, fake_speech_level  # noqa: E402
-from orb_widget import OrbWidget  # noqa: E402
+ASSETS = HERE / "assets" if (HERE / "assets").exists() else HERE
+
+try:
+    from agentctl.ui.orb.motion import STATES, fake_speech_level
+    from agentctl.ui.orb.widget import OrbWidget
+except ImportError:
+    sys.path.insert(0, str(HERE))
+    from orb_motion import STATES, fake_speech_level  # type: ignore # noqa: E402
+    from orb_widget import OrbWidget  # type: ignore # noqa: E402
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--assets", default=str(HERE))
+    ap.add_argument("--assets", default=str(ASSETS))
     ap.add_argument("--size", type=int, default=260)
     ap.add_argument("--transparent", action="store_true")
     args = ap.parse_args()

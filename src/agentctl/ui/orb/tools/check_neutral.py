@@ -10,8 +10,11 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "orb_assets"))
-from orb_motion import OrbMotion  # noqa: E402
+try:
+    from agentctl.ui.orb.motion import OrbMotion
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from motion import OrbMotion  # type: ignore # noqa: E402
 from preview_webgl import render_frames  # noqa: E402
 
 
