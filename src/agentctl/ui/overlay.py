@@ -297,6 +297,15 @@ class AgentOverlayWindow(QWidget):
             if hasattr(self, "vignette"):
                 self.vignette.setGeometry(0, geo.height() - VIG_H, geo.width(), VIG_H)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        w, h = self.width(), self.height()
+        if hasattr(self, "border"):
+            self.border.setGeometry(0, 0, w, h)
+        VIG_H = 400
+        if hasattr(self, "vignette"):
+            self.vignette.setGeometry(0, h - VIG_H, w, VIG_H)
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
@@ -341,7 +350,10 @@ class AgentOverlayWindow(QWidget):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
         logger.info("UI", "Overlay activated. Playing opening animation...")
         self._position_on_screen()
-        self.show()
+        if FULLSCREEN_OVERLAY:
+            self.showFullScreen()
+        else:
+            self.show()
 
         # On Wayland compositors, reinforce screen assignment via QWindow handle
         if self.windowHandle():
