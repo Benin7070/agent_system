@@ -55,7 +55,7 @@ class SilenceAccumulator:
         self,
         sample_rate: int = 16000,
         frame_duration_ms: int = 20,
-        silence_threshold_ms: int = 1400,
+        silence_threshold_ms: int = 1750,
         pre_speech_buffer_ms: int = 400,
         min_speech_frames: int = 12,  # at least 240ms of speech before silence can trigger
         calibration_frames: int = 0,  # Number of frames to calibrate ambient noise floor (0 = disabled)

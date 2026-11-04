@@ -1,5 +1,9 @@
 import os
 import sys
+
+# Ensure Wayland compositor honours BypassWindowManagerHint for frameless translucent overlays
+os.environ.setdefault("QT_WAYLAND_USE_BYPASSWINDOWMANAGERHINT", "1")
+
 from pathlib import Path
 import threading
 import time
@@ -171,7 +175,8 @@ class SttWorker(threading.Thread):
                 self._partial_thread.start()
 
             if silence_triggered:
-                logger.vad(f"Silence threshold (1400ms) reached! Total speech: {self.vad.total_speech_frames * 20}ms.")
+                thresh_ms = self.vad.silence_threshold_frames * self.vad.frame_duration_ms
+                logger.vad(f"Silence threshold ({thresh_ms}ms) reached! Total speech: {self.vad.total_speech_frames * 20}ms.")
                 self._running = False
                 self.mic.stop()
                 if self._partial_thread and self._partial_thread.is_alive():
@@ -232,7 +237,6 @@ class AgentOverlayWindow(QWidget):
 
         # ---- Full-screen border glow (absolute-positioned sibling) ----
         self.border = BorderWidget(self)
-        self.border.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
         self.border.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.border.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.border.setAutoFillBackground(False)
@@ -288,6 +292,7 @@ class AgentOverlayWindow(QWidget):
             geo = screen.geometry()
             if FULLSCREEN_OVERLAY:
                 self.setGeometry(geo)
+                self.setFixedSize(geo.width(), geo.height())
             else:
                 w = max(360, self.orb.width() + 64)
                 h = max(240, self.orb.height() + 80)
@@ -307,8 +312,8 @@ class AgentOverlayWindow(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
         painter.end()
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -349,10 +354,10 @@ class AgentOverlayWindow(QWidget):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
         logger.info("UI", "Overlay activated. Playing opening animation...")
         self._position_on_screen()
-        if FULLSCREEN_OVERLAY:
-            self.showFullScreen()
-        else:
-            self.show()
+        # Use frameless pseudo-fullscreen via self.setGeometry() + self.show() instead of
+        # showFullScreen(). On Wayland compositors (COSMIC cosmic-comp, GNOME Mutter),
+        # calling showFullScreen() switches the surface to opaque direct-scanout mode.
+        self.show()
 
         # On Wayland compositors, reinforce screen assignment via QWindow handle
         if self.windowHandle():

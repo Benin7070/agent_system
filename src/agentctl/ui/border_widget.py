@@ -59,7 +59,6 @@ class BorderWidget(QOpenGLWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
         self.setAutoFillBackground(False)
         pal = self.palette()
         pal.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))

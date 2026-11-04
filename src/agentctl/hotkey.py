@@ -19,8 +19,10 @@ def handle_hotkey_press():
 
         if state == "IDLE":
             print("[Hotkey] State is IDLE -> Activating Overlay")
-            # Spawn overlay UI subprocess
-            OVERLAY_PROCESS = subprocess.Popen([sys.executable, "-m", "agentctl.ui.overlay"])
+            # Spawn overlay UI subprocess with Wayland bypass hint enabled
+            env = os.environ.copy()
+            env["QT_WAYLAND_USE_BYPASSWINDOWMANAGERHINT"] = "1"
+            OVERLAY_PROCESS = subprocess.Popen([sys.executable, "-m", "agentctl.ui.overlay"], env=env)
         else:
             print(f"[Hotkey] State is {state} -> Cancelling")
             client.cancel()
