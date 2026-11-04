@@ -75,6 +75,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = Arc::new(AppState::new(fsm, gate, audit));
 
+    if args.len() > 1 && (args[1] == "hotkey" || args[1] == "hotkey-listen") {
+        println!("Starting dedicated KEY_PROG2 (149) hotkey listener...");
+        let dev = agentctl_daemon::hotkey::find_hotkey_device(agentctl_daemon::hotkey::KEY_PROG2);
+        println!("Discovered hotkey device: {:?}", dev);
+        agentctl_daemon::hotkey::run_hotkey_listener_loop(
+            state.clone(),
+            Arc::new(tokio::sync::Mutex::new(None)),
+        )
+        .await;
+        return Ok(());
+    }
+
+    if args.len() > 1 && args[1] == "hotkey-trigger" {
+        println!("Manually triggering KEY_PROG2 (149) toggle...");
+        let action = agentctl_daemon::hotkey::handle_hotkey_toggle(
+            &state,
+            &Arc::new(tokio::sync::Mutex::new(None)),
+        )
+        .await?;
+        println!("Hotkey toggle result: {:?}", action);
+        return Ok(());
+    }
+
+    // Start background hotkey listener for KEY_PROG2 (149)
+    agentctl_daemon::hotkey::spawn_hotkey_listener(state.clone());
+
     tracing::info!("AgentCTL Daemon listening on UDS: {}", socket_path.display());
     println!("AgentCTL Daemon running on {}", socket_path.display());
 
