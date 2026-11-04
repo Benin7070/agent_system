@@ -6,11 +6,12 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QGuiApplication, QKeyEvent
-from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
+from PyQt6.QtGui import QGuiApplication, QKeyEvent, QPixmap
+from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 # Add orb_assets to sys.path so orb_widget and orb_motion import cleanly
 from agentctl.config import (
+    ASSETS_DIR,
     FULLSCREEN_OVERLAY,
     LEVEL_SEND_RATE_HZ,
     ORB_ASSETS_DIR,
@@ -29,8 +30,9 @@ from agentctl.logger import logger
 from agentctl.stt.engine import SttEngine
 from agentctl.stt.microphone import MicrophoneStream
 from agentctl.stt.vad import SilenceAccumulator
+from agentctl.ui.border_widget import BorderWidget
 from agentctl.ui.screens import get_active_screen
-from agentctl.ui.transcript import TranscriptCard, make_spring_curve
+from agentctl.ui.transcript import TranscriptCard
 
 
 # --- Placeholder Level Generators & Integration Hooks (Item 4) ---
@@ -197,6 +199,7 @@ class AgentOverlayWindow(QWidget):
     intensity_signal = pyqtSignal(float)
     ws_state_signal = pyqtSignal(str)
     ws_level_signal = pyqtSignal(float)
+    ws_opacity_signal = pyqtSignal(float)
 
     def __init__(self):
         super().__init__()
@@ -216,10 +219,23 @@ class AgentOverlayWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
 
+        # ---- Bottom vignette (non-interactive, absolute-positioned) ----
+        self.vignette = QLabel(self)
+        self.vignette.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.vignette.setScaledContents(True)
+        vig_pix = QPixmap(str(ASSETS_DIR / "vignette_bottom.png"))
+        self.vignette.setPixmap(vig_pix)
+        self.vignette.lower()
+
+        # ---- Full-screen border glow (absolute-positioned sibling) ----
+        self.border = BorderWidget(self)
+        self.border.setGeometry(0, 0, 1920, 1080)
+        self.border.lower()
+
         # Layout
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 48)
-        self.layout.setSpacing(12)
+        self.layout.setSpacing(14)
         if FULLSCREEN_OVERLAY:
             self.layout.addStretch(1)
 
@@ -237,6 +253,7 @@ class AgentOverlayWindow(QWidget):
         self.intensity_signal.connect(self._handle_intensity)
         self.ws_state_signal.connect(self._handle_ws_state)
         self.ws_level_signal.connect(self._handle_ws_level)
+        self.ws_opacity_signal.connect(self._handle_ws_opacity)
         self.orb.closed.connect(self._on_exit_finished)
 
         self.stt_worker: Optional[SttWorker] = None
@@ -266,6 +283,13 @@ class AgentOverlayWindow(QWidget):
                 y = geo.y() + geo.height() - h - 48
                 self.move(x, y)
 
+            if hasattr(self, "border"):
+                self.border.setGeometry(0, 0, geo.width(), geo.height())
+
+            VIG_H = 400
+            if hasattr(self, "vignette"):
+                self.vignette.setGeometry(0, geo.height() - VIG_H, geo.width(), VIG_H)
+
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Escape:
             self.cancel_and_exit()
@@ -286,11 +310,19 @@ class AgentOverlayWindow(QWidget):
             self.cancel_and_exit()
         else:
             self.orb.set_state(state_name)
+            if hasattr(self, "border"):
+                self.border.set_state(state_name)
 
     def _handle_ws_level(self, level: float):
-        """Sets smoothed reactive audio/activity level on the orb."""
+        """Sets smoothed reactive audio/activity level on the orb and border."""
         if not self._is_closing:
             self.orb.set_level(level)
+            if hasattr(self, "border"):
+                self.border.set_level(level)
+
+    def _handle_ws_opacity(self, value: float):
+        if hasattr(self, "border"):
+            self.border.set_opacity(value)
 
     def activate_and_show(self):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
@@ -315,6 +347,9 @@ class AgentOverlayWindow(QWidget):
 
         # One-shot pop-in animation
         self.orb.play_opening()
+        if hasattr(self, "border"):
+            self.border.set_state("listening")
+            self.border.set_opacity(1.0)
         self.transcript_card.set_transcript("")
         self.transcript_card.animate_in()
 
@@ -335,11 +370,15 @@ class AgentOverlayWindow(QWidget):
         if USE_FAKE_LEVEL:
             return
         self.orb.set_level(intensity)
+        if hasattr(self, "border"):
+            self.border.set_level(intensity)
 
     def _handle_final_transcript(self, text: str):
         self.transcript_card.set_transcript(text)
         self.transcript_card.set_submitted()
         self.orb.set_state("thinking")
+        if hasattr(self, "border"):
+            self.border.set_state("thinking")
 
         # Send intent to daemon
         try:
@@ -359,6 +398,8 @@ class AgentOverlayWindow(QWidget):
         if self.stt_worker:
             self.stt_worker.stop()
 
+        if hasattr(self, "border"):
+            self.border.set_opacity(0.0)
         self.transcript_card.animate_out()
         self.orb.play_closing()
 
@@ -380,6 +421,8 @@ class AgentOverlayWindow(QWidget):
         except Exception as e:
             logger.warn("UI", f"Cancel request error: {e}")
 
+        if hasattr(self, "border"):
+            self.border.set_opacity(0.0)
         self.transcript_card.set_discarded()
         self.transcript_card.animate_out()
         self.orb.play_closing()

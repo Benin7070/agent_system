@@ -14,6 +14,7 @@ TARGET_SCREEN: str = os.environ.get("AGENTCTL_SCREEN", "").strip()
 
 # Asset paths
 ORB_ASSETS_DIR: Path = Path(os.environ.get("AGENTCTL_ORB_ASSETS", REPO_ROOT / "orb" / "orb_assets"))
+ASSETS_DIR: Path = Path(os.environ.get("AGENTCTL_ASSETS", REPO_ROOT / "src" / "agentctl" / "ui" / "assets"))
 
 # Socket & WebSocket configuration
 SOCKET_PATH: Path = get_socket_path()
