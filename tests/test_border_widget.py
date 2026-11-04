@@ -4,8 +4,13 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
 
 
+_APP = None
+
 def _app():
-    return QApplication.instance() or QApplication([])
+    global _APP
+    if _APP is None:
+        _APP = QApplication.instance() or QApplication([])
+    return _APP
 
 
 def test_border_state_color_table():

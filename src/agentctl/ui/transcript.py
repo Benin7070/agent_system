@@ -148,29 +148,36 @@ class TranscriptCard(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         _load_assets()
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent; border: none;")
 
         self._pill_w: int = self.MAX_W    # current rendered pill width
         self._pill_opacity: float = 0.0  # 0..1; controls whole card
+        self._y_offset: int = 0          # vertical entrance animation offset
 
-        # Fixed size for layout purposes; actual pill width animates internally
-        self.setFixedSize(self.MAX_W, self.PILL_H + 8)   # +8 bottom shadow room
+        # Fixed size for layout purposes; extra vertical room for entrance slide
+        self.setFixedSize(self.MAX_W, self.PILL_H + 24)
 
         self.label = _TextLabel(self)
-        pad_h, pad_v = _PILL_CAP + 4, 8
-        label_geo = QRect(
-            pad_h, pad_v,
-            self.MAX_W - 2 * pad_h,
-            self.PILL_H - 2 * pad_v,
-        )
-        self.label.set_base_geometry(label_geo)
+        self._update_label_geo()
         self.label.setText("Listening…")
         self.label.setStyleSheet("color: rgba(244,244,245,0.55); background: transparent; font-style: italic;")
 
         # Animation state
         self._pill_w_anim:    Optional[QPropertyAnimation] = None
         self._pill_op_anim:   Optional[QPropertyAnimation] = None
+        self._y_anim:         Optional[QPropertyAnimation] = None
+
+    def _update_label_geo(self):
+        pad_h, pad_v = _PILL_CAP + 4, 8
+        label_geo = QRect(
+            pad_h, self._y_offset + pad_v,
+            self.MAX_W - 2 * pad_h,
+            self.PILL_H - 2 * pad_v,
+        )
+        self.label.set_base_geometry(label_geo)
 
     # ------------------------------------------------------------------ pyqtProperties for animation
     @pyqtProperty(int)
@@ -191,6 +198,16 @@ class TranscriptCard(QWidget):
         self._pill_opacity = max(0.0, min(1.0, float(v)))
         self.update()
 
+    @pyqtProperty(int)
+    def yOffset(self) -> int:
+        return self._y_offset
+
+    @yOffset.setter
+    def yOffset(self, v: int):
+        self._y_offset = int(v)
+        self._update_label_geo()
+        self.update()
+
     # ------------------------------------------------------------------ public API
     def set_transcript(self, text: str):
         """Update text and trigger bottom-to-top fade-in of the label."""
@@ -204,8 +221,11 @@ class TranscriptCard(QWidget):
             self.label.setStyleSheet(
                 "color: rgba(244,244,245,0.92); background: transparent; font-style: normal;")
             self.setAccessibleName(text)
-        # Delay text fade-in to let outgoing text finish first
-        QTimer.singleShot(80, self.label.fade_in_text)
+        # Delay text fade-in depending on pill open state
+        if self._pill_opacity > 0.3:
+            QTimer.singleShot(80, self.label.fade_in_text)
+        else:
+            QTimer.singleShot(180, self.label.fade_in_text)
 
     def set_discarded(self):
         self.label.setStyleSheet("color: rgba(244,244,245,0.40); background: transparent;")
@@ -214,32 +234,46 @@ class TranscriptCard(QWidget):
         self.label.setStyleSheet("color: rgba(244,244,245,0.60); background: transparent;")
 
     def animate_in(self):
-        """Centre-to-two-ends expand with a small overshoot pop, then fade in text."""
-        self._pill_w = 4
+        """Fluid entrance animation: slides up, expands from center, and fades in."""
+        self._pill_w = _PILL_CAP * 2
         self._pill_opacity = 0.0
+        self._y_offset = 18
+        self._update_label_geo()
         self.show()
 
-        expand_curve = QEasingCurve(QEasingCurve.Type.OutBack)
-        expand_curve.setOvershoot(1.15)   # small pop
+        # Stop any in-progress animations
+        for a in (self._pill_w_anim, self._pill_op_anim, self._y_anim):
+            if a and a.state() == QPropertyAnimation.State.Running:
+                a.stop()
 
-        # Phase 1: expand pill width
-        self._pill_w_anim = QPropertyAnimation(self, b"pillWidth")
-        self._pill_w_anim.setDuration(260)
-        self._pill_w_anim.setStartValue(4)
-        self._pill_w_anim.setEndValue(self.MAX_W)
-        self._pill_w_anim.setEasingCurve(expand_curve)
-        self._pill_w_anim.start()
-
-        # Phase 1b: fade pill opacity
+        # Phase 1: fade pill opacity 0.0 -> 1.0 (280ms)
         self._pill_op_anim = QPropertyAnimation(self, b"pillOpacity")
-        self._pill_op_anim.setDuration(200)
+        self._pill_op_anim.setDuration(280)
         self._pill_op_anim.setStartValue(0.0)
         self._pill_op_anim.setEndValue(1.0)
         self._pill_op_anim.setEasingCurve(QEasingCurve(QEasingCurve.Type.OutCubic))
         self._pill_op_anim.start()
 
-        # Phase 2: text fade-in after pill is mostly open
-        QTimer.singleShot(200, self.label.fade_in_text)
+        # Phase 2: slide upward into position (18px -> 0px over 320ms)
+        self._y_anim = QPropertyAnimation(self, b"yOffset")
+        self._y_anim.setDuration(320)
+        self._y_anim.setStartValue(18)
+        self._y_anim.setEndValue(0)
+        ease_y = QEasingCurve(QEasingCurve.Type.OutBack)
+        ease_y.setOvershoot(1.10)
+        self._y_anim.setEasingCurve(ease_y)
+        self._y_anim.start()
+
+        # Phase 3: expand pill width from center (280ms)
+        self._pill_w_anim = QPropertyAnimation(self, b"pillWidth")
+        self._pill_w_anim.setDuration(280)
+        self._pill_w_anim.setStartValue(_PILL_CAP * 2)
+        self._pill_w_anim.setEndValue(self.MAX_W)
+        self._pill_w_anim.setEasingCurve(QEasingCurve(QEasingCurve.Type.OutCubic))
+        self._pill_w_anim.start()
+
+        # Phase 4: text fade-in synchronized as pill settles
+        QTimer.singleShot(140, self.label.fade_in_text)
 
     def animate_out(self, on_finished=None):
         """Text fades, then pill collapses two ends → centre, then fades."""
@@ -251,7 +285,7 @@ class TranscriptCard(QWidget):
         self._pill_w_anim = QPropertyAnimation(self, b"pillWidth")
         self._pill_w_anim.setDuration(220)
         self._pill_w_anim.setStartValue(self._pill_w)
-        self._pill_w_anim.setEndValue(4)
+        self._pill_w_anim.setEndValue(_PILL_CAP * 2)
         self._pill_w_anim.setEasingCurve(collapse_curve)
 
         self._pill_op_anim = QPropertyAnimation(self, b"pillOpacity")
@@ -263,8 +297,8 @@ class TranscriptCard(QWidget):
         if on_finished:
             self._pill_op_anim.finished.connect(on_finished)
 
-        QTimer.singleShot(100, self._pill_w_anim.start)
-        QTimer.singleShot(120, self._pill_op_anim.start)
+        QTimer.singleShot(80, self._pill_w_anim.start)
+        QTimer.singleShot(100, self._pill_op_anim.start)
 
     # ------------------------------------------------------------------ paint
     def paintEvent(self, event):
@@ -278,7 +312,8 @@ class TranscriptCard(QWidget):
 
         # Pill is always centred horizontally inside the fixed-width widget
         x_offset = (self.width() - self._pill_w) // 2
-        pill_rect = QRect(x_offset, 0, self._pill_w, self.PILL_H)
+        y_offset = self._y_offset
+        pill_rect = QRect(x_offset, y_offset, self._pill_w, self.PILL_H)
 
         # Layer 1: pill body (9-slice or scaled)
         _draw_9slice(painter, _PILL_BG, pill_rect, _PILL_CAP)
@@ -287,7 +322,7 @@ class TranscriptCard(QWidget):
         if _PILL_SPEC is not None and self._pill_w > _PILL_CAP * 2:
             spec_w = min(_PILL_SPEC.width(), self._pill_w - _PILL_CAP)
             spec_x = x_offset + (self._pill_w - spec_w) // 2
-            spec_rect = QRect(spec_x, 4, spec_w, _PILL_SPEC_H)
+            spec_rect = QRect(spec_x, y_offset + 4, spec_w, _PILL_SPEC_H)
             painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Screen)
             painter.drawPixmap(spec_rect, _PILL_SPEC,
                                QRect(0, 0, _PILL_SPEC.width(), _PILL_SPEC.height()))

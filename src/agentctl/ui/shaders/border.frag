@@ -72,6 +72,10 @@ void main() {
     vec3  color = mix(u_color_a, u_color_b, flow * flow_amt + (1.0 - flow_amt) * 0.5);
 
     // ---- Gaussian falloff from edge ----
+    if (d > band * 2.5) {
+        frag_color = vec4(0.0);
+        return;
+    }
     float alpha = glow_peak * exp(-d * d / (band * band * 0.5));
     alpha = clamp(alpha, 0.0, 0.92) * u_opacity;
 

@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QGuiApplication, QKeyEvent, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QGuiApplication, QKeyEvent, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 # Add orb_assets to sys.path so orb_widget and orb_motion import cleanly
@@ -223,19 +223,20 @@ class AgentOverlayWindow(QWidget):
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-
-        # ---- Bottom vignette (non-interactive, absolute-positioned) ----
-        self.vignette = QLabel(self)
-        self.vignette.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.vignette.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.vignette.setStyleSheet("background: transparent;")
-        self.vignette.setScaledContents(True)
-        vig_pix = QPixmap(str(ASSETS_DIR / "vignette_bottom.png"))
-        self.vignette.setPixmap(vig_pix)
-        self.vignette.lower()
+        self.setAutoFillBackground(False)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
+        pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
+        self.setPalette(pal)
+        self.setStyleSheet("background: transparent;")
 
         # ---- Full-screen border glow (absolute-positioned sibling) ----
         self.border = BorderWidget(self)
+        self.border.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
+        self.border.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.border.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.border.setAutoFillBackground(False)
+        self.border.setStyleSheet("background: transparent; border: none; outline: none;")
         self.border.setGeometry(0, 0, 1920, 1080)
         self.border.lower()
 
@@ -252,6 +253,11 @@ class AgentOverlayWindow(QWidget):
 
         # 2. Native OrbWidget
         self.orb = OrbWidget(ORB_ASSETS_DIR, orb_size=ORB_SIZE, start_visible=True)
+        self.orb.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
+        self.orb.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.orb.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.orb.setAutoFillBackground(False)
+        self.orb.setStyleSheet("background: transparent; border: none; outline: none;")
         self.layout.addWidget(self.orb, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         # Connect signals
@@ -266,10 +272,10 @@ class AgentOverlayWindow(QWidget):
         self.stt_worker: Optional[SttWorker] = None
         self._is_closing = False
 
-        # WebSocket push client (Item 2 & 3: replaces 150ms polling timer)
+        # WebSocket push client (replaces polling timer)
         self.ws_client = DaemonWsClient(
             on_state=self.ws_state_signal.emit,
-            on_level=self.ws_level_signal.emit,
+            on_level=lambda v: self.ws_level_signal.emit(float(v)),
         )
         self.ws_client.start()
 
@@ -293,18 +299,11 @@ class AgentOverlayWindow(QWidget):
             if hasattr(self, "border"):
                 self.border.setGeometry(0, 0, geo.width(), geo.height())
 
-            VIG_H = 400
-            if hasattr(self, "vignette"):
-                self.vignette.setGeometry(0, geo.height() - VIG_H, geo.width(), VIG_H)
-
     def resizeEvent(self, event):
         super().resizeEvent(event)
         w, h = self.width(), self.height()
         if hasattr(self, "border"):
             self.border.setGeometry(0, 0, w, h)
-        VIG_H = 400
-        if hasattr(self, "vignette"):
-            self.vignette.setGeometry(0, h - VIG_H, w, VIG_H)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -367,12 +366,11 @@ class AgentOverlayWindow(QWidget):
         except Exception as e:
             logger.warn("UI", f"Daemon activation error: {e}")
 
-        # One-shot pop-in animation
+        # One-shot pop-in animation on orb, edge border glow, and smooth text box entrance
         self.orb.play_opening()
         if hasattr(self, "border"):
             self.border.set_state("listening")
             self.border.set_opacity(1.0)
-        self.transcript_card.set_transcript("")
         self.transcript_card.animate_in()
 
         # Start STT background worker
@@ -472,6 +470,11 @@ class AgentOverlayWindow(QWidget):
 def main():
     OrbWidget.configure_format()
     app = QApplication(sys.argv)
+    pal = app.palette()
+    pal.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
+    pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
+    app.setPalette(pal)
+    app.setStyleSheet("QWidget { background: transparent; }")
     window = AgentOverlayWindow()
     window.activate_and_show()
     sys.exit(app.exec())

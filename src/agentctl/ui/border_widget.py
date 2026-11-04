@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import QElapsedTimer, Qt, QTimer
-from PyQt6.QtGui import QSurfaceFormat, QVector2D, QVector3D
+from PyQt6.QtGui import QColor, QPalette, QSurfaceFormat, QVector2D, QVector3D
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer,
     QOpenGLShader,
@@ -56,10 +56,16 @@ class BorderWidget(QOpenGLWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        self.setStyleSheet("background: transparent;")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
+        self.setAutoFillBackground(False)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
+        pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
+        self.setPalette(pal)
+        self.setStyleSheet("background: transparent; border: none; outline: none;")
 
         self._state_id: int        = 0
         self._color_a: tuple       = _DEFAULT_STATE[1]

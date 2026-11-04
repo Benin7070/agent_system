@@ -2,8 +2,13 @@
 from PyQt6.QtWidgets import QApplication
 
 
+_APP = None
+
 def _app():
-    return QApplication.instance() or QApplication([])
+    global _APP
+    if _APP is None:
+        _APP = QApplication.instance() or QApplication([])
+    return _APP
 
 
 def test_pill_property_clamp():
@@ -47,3 +52,29 @@ def test_vignette_asset_exists():
     pix = QPixmap(str(ASSETS_DIR / "vignette_bottom.png"))
     assert not pix.isNull(), "vignette_bottom.png must load as a valid QPixmap"
     assert pix.height() == 400
+
+
+def test_pill_entrance_animation_progresses():
+    """animate_in() must configure initial animation state and progress to final targets."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from agentctl.ui.transcript import TranscriptCard, _PILL_CAP
+
+    app = _app()
+    card = TranscriptCard()
+    assert card.testAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+    assert card.testAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+    assert not card.autoFillBackground()
+
+    # Call animate_in
+    card.animate_in()
+    assert card.pillOpacity == 0.0
+    assert card.yOffset == 18
+    assert card.pillWidth == _PILL_CAP * 2
+
+    # Advance time and process Qt animation events
+    QTest.qWait(350)
+
+    assert card.pillOpacity > 0.95
+    assert card.yOffset == 0
+    assert card.pillWidth == TranscriptCard.MAX_W

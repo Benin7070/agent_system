@@ -19,7 +19,7 @@ import array
 from pathlib import Path
 
 from PyQt6.QtCore import QElapsedTimer, Qt, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QSurfaceFormat, QVector2D, QVector3D, QVector4D
+from PyQt6.QtGui import QColor, QImage, QPalette, QSurfaceFormat, QVector2D, QVector3D, QVector4D
 from PyQt6.QtOpenGL import (
     QOpenGLBuffer, QOpenGLShader, QOpenGLShaderProgram, QOpenGLTexture,
     QOpenGLVersionFunctionsFactory, QOpenGLVersionProfile, QOpenGLVertexArrayObject,
@@ -33,6 +33,8 @@ GL_TRIANGLE_STRIP = 0x0005
 GL_FLOAT = 0x1406
 GL_BLEND = 0x0BE2
 GL_TEXTURE0 = 0x84C0
+GL_ONE = 0x0001
+GL_ONE_MINUS_SRC_ALPHA = 0x0303
 
 DISC_FRACTION = 780.0 / 1080.0   # the orb disc spans 780 of the 1080 stage units
 DEFAULT_HEADER = "#version 330 core\n"
@@ -64,7 +66,15 @@ class OrbWidget(QOpenGLWidget):
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
+        self.setAutoFillBackground(False)
+        pal = self.palette()
+        pal.setColor(QPalette.ColorRole.Window, QColor(0, 0, 0, 0))
+        pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
+        self.setPalette(pal)
+        self.setStyleSheet("background: transparent; border: none; outline: none;")
         self.set_orb_size(orb_size)
 
         self._state_sig.connect(self._on_state)
@@ -187,7 +197,8 @@ class OrbWidget(QOpenGLWidget):
         gl.glClear(GL_COLOR_BUFFER_BIT)
         if self._prog is None or self._uniforms.get("u_opacity", 1.0) <= 0.0 and not self.motion.visible:
             return
-        gl.glDisable(GL_BLEND)      # shader output is premultiplied and replaces the cleared pixel
+        gl.glEnable(GL_BLEND)
+        gl.glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
 
         prog = self._prog
         prog.bind()
@@ -204,3 +215,4 @@ class OrbWidget(QOpenGLWidget):
         gl.glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
         self._vao.release()
         prog.release()
+        gl.glDisable(GL_BLEND)
