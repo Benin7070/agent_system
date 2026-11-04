@@ -1,9 +1,5 @@
 import os
 import sys
-
-# Ensure Wayland compositor honours BypassWindowManagerHint for frameless translucent overlays
-os.environ.setdefault("QT_WAYLAND_USE_BYPASSWINDOWMANAGERHINT", "1")
-
 from pathlib import Path
 import threading
 import time
@@ -215,11 +211,10 @@ class AgentOverlayWindow(QWidget):
         super().__init__()
         self.client = DaemonClient()
 
-        # Window flags: Frameless, translucent, always-on-top, bypass window manager borders
+        # Window flags: Frameless, translucent, always-on-top
         flags = (
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.BypassWindowManagerHint
         )
         # Option B: Full-screen transparent overlay with click-through
         if FULLSCREEN_OVERLAY:
@@ -292,7 +287,6 @@ class AgentOverlayWindow(QWidget):
             geo = screen.geometry()
             if FULLSCREEN_OVERLAY:
                 self.setGeometry(geo)
-                self.setFixedSize(geo.width(), geo.height())
             else:
                 w = max(360, self.orb.width() + 64)
                 h = max(240, self.orb.height() + 80)
@@ -312,8 +306,8 @@ class AgentOverlayWindow(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
         painter.end()
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -354,10 +348,10 @@ class AgentOverlayWindow(QWidget):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
         logger.info("UI", "Overlay activated. Playing opening animation...")
         self._position_on_screen()
-        # Use frameless pseudo-fullscreen via self.setGeometry() + self.show() instead of
-        # showFullScreen(). On Wayland compositors (COSMIC cosmic-comp, GNOME Mutter),
-        # calling showFullScreen() switches the surface to opaque direct-scanout mode.
-        self.show()
+        if FULLSCREEN_OVERLAY:
+            self.showFullScreen()
+        else:
+            self.show()
 
         # On Wayland compositors, reinforce screen assignment via QWindow handle
         if self.windowHandle():
