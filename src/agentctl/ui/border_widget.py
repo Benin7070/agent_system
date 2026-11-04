@@ -59,6 +59,7 @@ class BorderWidget(QOpenGLWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setStyleSheet("background: transparent;")
 
         self._state_id: int        = 0
         self._color_a: tuple       = _DEFAULT_STATE[1]
@@ -121,6 +122,8 @@ class BorderWidget(QOpenGLWidget):
         if self._gl is None:
             raise RuntimeError("BorderWidget: OpenGL 4.1 core functions unavailable.")
         self._gl.initializeOpenGLFunctions()
+        self._gl.glClearColor(0.0, 0.0, 0.0, 0.0)
+        self._gl.glClear(GL_COLOR_BUFFER_BIT)
 
         prog = QOpenGLShaderProgram(self)
         for kind, name in (
@@ -192,3 +195,4 @@ class BorderWidget(QOpenGLWidget):
         prog.release()
 
         gl.glDisable(GL_BLEND)
+

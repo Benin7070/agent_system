@@ -6,7 +6,7 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QGuiApplication, QKeyEvent, QPixmap
+from PyQt6.QtGui import QGuiApplication, QKeyEvent, QPainter, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 # Add orb_assets to sys.path so orb_widget and orb_motion import cleanly
@@ -205,23 +205,25 @@ class AgentOverlayWindow(QWidget):
         super().__init__()
         self.client = DaemonClient()
 
-        # Window flags: Frameless, translucent, always-on-top
+        # Window flags: Frameless, translucent, always-on-top, bypass window manager borders
         flags = (
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
+            | Qt.WindowType.BypassWindowManagerHint
         )
         # Option B: Full-screen transparent overlay with click-through
         if FULLSCREEN_OVERLAY:
             flags |= Qt.WindowType.WindowTransparentForInput
 
         self.setWindowFlags(flags)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
 
         # ---- Bottom vignette (non-interactive, absolute-positioned) ----
         self.vignette = QLabel(self)
-        self.vignette.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.vignette.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.vignette.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.vignette.setStyleSheet("background: transparent;")
         self.vignette.setScaledContents(True)
         vig_pix = QPixmap(str(ASSETS_DIR / "vignette_bottom.png"))
         self.vignette.setPixmap(vig_pix)
@@ -290,6 +292,12 @@ class AgentOverlayWindow(QWidget):
             if hasattr(self, "vignette"):
                 self.vignette.setGeometry(0, geo.height() - VIG_H, geo.width(), VIG_H)
 
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        painter.fillRect(self.rect(), Qt.GlobalColor.transparent)
+        painter.end()
+
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Escape:
             self.cancel_and_exit()
@@ -328,10 +336,7 @@ class AgentOverlayWindow(QWidget):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
         logger.info("UI", "Overlay activated. Playing opening animation...")
         self._position_on_screen()
-        if FULLSCREEN_OVERLAY:
-            self.showFullScreen()
-        else:
-            self.show()
+        self.show()
 
         # On Wayland compositors, reinforce screen assignment via QWindow handle
         if self.windowHandle():

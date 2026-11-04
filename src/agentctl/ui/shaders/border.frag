@@ -78,3 +78,4 @@ void main() {
     // Premultiply
     frag_color = vec4(color * alpha, alpha);
 }
+

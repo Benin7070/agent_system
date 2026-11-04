@@ -46,3 +46,4 @@ def test_border_opacity_stops_timer():
     QTimer.singleShot(50, lambda: None)
     bw._tick()
     assert not bw._timer.isActive(), "Timer should stop when opacity is 0"
+
