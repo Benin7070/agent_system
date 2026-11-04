@@ -39,7 +39,6 @@ class TranscriptCard(QFrame):
         self.opacity_effect.setOpacity(0.0)
         self.setGraphicsEffect(self.opacity_effect)
 
-        self.slide_anim = None
         self.fade_anim = None
 
     def set_transcript(self, text: str):
@@ -60,50 +59,30 @@ class TranscriptCard(QFrame):
         self.label.setStyleSheet("color: rgba(244, 244, 245, 0.60);")
 
     def animate_in(self):
-        """Slides in from bottom with spring curve."""
+        """Fades in with smooth spring curve while remaining locked in layout above the orb."""
         self.show()
         curve = make_spring_curve(stiffness=280.0, damping=24.0)
 
         # Fade opacity 0.0 -> 1.0
         self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_anim.setDuration(320)
+        self.fade_anim.setDuration(280)
         self.fade_anim.setStartValue(0.0)
         self.fade_anim.setEndValue(1.0)
         self.fade_anim.setEasingCurve(curve)
-
-        # Slide Y offset
-        start_pos = QPoint(self.x(), self.y() + 20)
-        end_pos = QPoint(self.x(), self.y())
-        self.slide_anim = QPropertyAnimation(self, b"pos")
-        self.slide_anim.setDuration(320)
-        self.slide_anim.setStartValue(start_pos)
-        self.slide_anim.setEndValue(end_pos)
-        self.slide_anim.setEasingCurve(curve)
-
         self.fade_anim.start()
-        self.slide_anim.start()
 
     def animate_out(self, on_finished=None):
-        """Slides down and fades out."""
+        """Fades out while remaining cleanly positioned."""
         curve = make_spring_curve(stiffness=320.0, damping=28.0)
 
         self.fade_anim = QPropertyAnimation(self.opacity_effect, b"opacity")
-        self.fade_anim.setDuration(240)
+        self.fade_anim.setDuration(220)
         self.fade_anim.setStartValue(self.opacity_effect.opacity())
         self.fade_anim.setEndValue(0.0)
         self.fade_anim.setEasingCurve(curve)
-
-        start_pos = self.pos()
-        end_pos = QPoint(self.x(), self.y() + 16)
-        self.slide_anim = QPropertyAnimation(self, b"pos")
-        self.slide_anim.setDuration(240)
-        self.slide_anim.setStartValue(start_pos)
-        self.slide_anim.setEndValue(end_pos)
-        self.slide_anim.setEasingCurve(curve)
 
         if on_finished:
             self.fade_anim.finished.connect(on_finished)
 
         self.fade_anim.start()
-        self.slide_anim.start()
 

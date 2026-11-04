@@ -34,7 +34,21 @@ class DaemonWsClient(threading.Thread):
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         self._outgoing_queue = asyncio.Queue(maxsize=1)
-        self._loop.run_until_complete(self._main_loop())
+        try:
+            self._loop.run_until_complete(self._main_loop())
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        finally:
+            try:
+                pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
+                for task in pending:
+                    task.cancel()
+                if pending and not self._loop.is_closed():
+                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                if not self._loop.is_closed():
+                    self._loop.close()
+            except Exception:
+                pass
 
     async def _main_loop(self):
         backoff = 0.5
@@ -69,18 +83,21 @@ class DaemonWsClient(threading.Thread):
                 self._ws = None
 
     async def _read_events(self, ws):
-        async for raw in ws:
-            try:
-                data = json.loads(raw)
-                msg_type = data.get("type")
-                if msg_type == "state":
-                    state_name = data.get("state", "idle")
-                    self.on_state(state_name)
-                elif msg_type == "level":
-                    level_val = float(data.get("value", 0.0))
-                    self.on_level(level_val)
-            except Exception as e:
-                logger.warn("WS", f"Failed to parse incoming WS message: {e}")
+        try:
+            async for raw in ws:
+                try:
+                    data = json.loads(raw)
+                    msg_type = data.get("type")
+                    if msg_type == "state":
+                        state_name = data.get("state", "idle")
+                        self.on_state(state_name)
+                    elif msg_type == "level":
+                        level_val = float(data.get("value", 0.0))
+                        self.on_level(level_val)
+                except Exception as e:
+                    logger.warn("WS", f"Failed to parse incoming WS message: {e}")
+        except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
+            pass
 
     async def _write_events(self, ws):
         while self._running:
@@ -110,4 +127,9 @@ class DaemonWsClient(threading.Thread):
     def stop(self):
         self._running = False
         if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            def _cleanup():
+                for task in asyncio.all_tasks(self._loop):
+                    task.cancel()
+                self._loop.stop()
+            self._loop.call_soon_threadsafe(_cleanup)
+

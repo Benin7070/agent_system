@@ -29,6 +29,7 @@ from agentctl.logger import logger
 from agentctl.stt.engine import SttEngine
 from agentctl.stt.microphone import MicrophoneStream
 from agentctl.stt.vad import SilenceAccumulator
+from agentctl.ui.screens import get_active_screen
 from agentctl.ui.transcript import TranscriptCard, make_spring_curve
 
 
@@ -251,8 +252,9 @@ class AgentOverlayWindow(QWidget):
         self._position_on_screen()
 
     def _position_on_screen(self):
-        screen = QGuiApplication.primaryScreen()
+        screen = get_active_screen()
         if screen:
+            self.setScreen(screen)
             geo = screen.geometry()
             if FULLSCREEN_OVERLAY:
                 self.setGeometry(geo)
@@ -260,8 +262,8 @@ class AgentOverlayWindow(QWidget):
                 w = max(360, self.orb.width() + 64)
                 h = max(240, self.orb.height() + 80)
                 self.resize(w, h)
-                x = (geo.width() - w) // 2
-                y = geo.height() - h - 48
+                x = geo.x() + (geo.width() - w) // 2
+                y = geo.y() + geo.height() - h - 48
                 self.move(x, y)
 
     def keyPressEvent(self, event: QKeyEvent):
@@ -294,7 +296,16 @@ class AgentOverlayWindow(QWidget):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
         logger.info("UI", "Overlay activated. Playing opening animation...")
         self._position_on_screen()
-        self.show()
+        if FULLSCREEN_OVERLAY:
+            self.showFullScreen()
+        else:
+            self.show()
+
+        # On Wayland compositors, reinforce screen assignment via QWindow handle
+        if self.windowHandle():
+            screen = get_active_screen()
+            if screen:
+                self.windowHandle().setScreen(screen)
 
         # Notify daemon
         try:

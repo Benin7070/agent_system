@@ -131,8 +131,29 @@ def test_ui_daemon_reconnect():
 
     # Restart daemon service
     subprocess.run(["systemctl", "--user", "restart", "agentctl-daemon"], check=True)
-    time.sleep(1.2)
+    t0 = time.time()
+    while time.time() - t0 < 3.0 and len(states_received) <= initial_count:
+        time.sleep(0.1)
 
     # After restart, client reconnects and receives state again
     assert len(states_received) > initial_count, "Client must automatically reconnect after daemon restart"
     ws_client.stop()
+
+
+def test_screen_detection():
+    """Verifies that screen detection correctly lists connected displays and active screen."""
+    from PyQt6.QtWidgets import QApplication
+    from agentctl.ui.screens import get_active_screen, list_screens_info
+
+    app = QApplication.instance() or QApplication([])
+    screens = list_screens_info()
+    assert len(screens) >= 1, "Must detect at least 1 display screen"
+
+    active = get_active_screen()
+    assert active is not None, "Active screen must not be None"
+
+    # Exactly one screen should be marked active
+    active_count = sum(1 for s in screens if s["is_active"])
+    assert active_count == 1, "Exactly one screen must be active"
+
+
