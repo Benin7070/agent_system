@@ -232,6 +232,7 @@ class AgentOverlayWindow(QWidget):
         self.border = BorderWidget(self)
         self.border.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.border.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.border.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
         self.border.setAutoFillBackground(False)
         self.border.setStyleSheet("background: transparent; border: none; outline: none;")
         self.border.setGeometry(0, 0, 1920, 1080)
@@ -285,10 +286,11 @@ class AgentOverlayWindow(QWidget):
             geo = screen.geometry()
             if FULLSCREEN_OVERLAY:
                 self.setGeometry(geo)
+                self.setFixedSize(geo.width(), geo.height())
             else:
                 w = max(360, self.orb.width() + 64)
                 h = max(240, self.orb.height() + 80)
-                self.resize(w, h)
+                self.setFixedSize(w, h)
                 x = geo.x() + (geo.width() - w) // 2
                 y = geo.y() + geo.height() - h - 48
                 self.move(x, y)
@@ -346,10 +348,12 @@ class AgentOverlayWindow(QWidget):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
         logger.info("UI", "Overlay activated. Playing opening animation...")
         self._position_on_screen()
-        if FULLSCREEN_OVERLAY:
-            self.showFullScreen()
-        else:
-            self.show()
+        # On Wayland compositors (COSMIC cosmic-comp, GNOME Mutter), calling showFullScreen()
+        # places the surface on the exclusive-fullscreen layer, which forces the compositor
+        # to render its solid opaque grey backdrop (#27292a) instead of the desktop.
+        # Calling self.show() with setFixedSize(geo.width(), geo.height()) covers the screen
+        # while keeping the background 100% transparent to the desktop underneath.
+        self.show()
 
         # On Wayland compositors, reinforce screen assignment via QWindow handle
         if self.windowHandle():
