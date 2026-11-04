@@ -102,6 +102,17 @@ class _TextLabel(QLabel):
         self._base_geo = geo
         self.setGeometry(geo)
 
+    def set_text_live(self, text: str):
+        """Immediately updates live streaming transcript without interrupting visibility or layout."""
+        for a in (self._fade_anim, self._slide_anim):
+            if a and a.state() == QPropertyAnimation.State.Running:
+                a.stop()
+        self._opacity_fx.setOpacity(1.0)
+        cur = self._base_geo if self._base_geo is not None else self.geometry()
+        self.setGeometry(cur)
+        self.setText(text)
+        self.setStyleSheet("color: rgba(244,244,245,0.92); background: transparent; font-style: normal;")
+
     def fade_in_text(self):
         """Bottom-to-top fade-in: Y shifts up 10 px while opacity 0→1."""
         for a in (self._fade_anim, self._slide_anim):
@@ -210,22 +221,36 @@ class TranscriptCard(QWidget):
 
     # ------------------------------------------------------------------ public API
     def set_transcript(self, text: str):
-        """Update text and trigger bottom-to-top fade-in of the label."""
-        self.label.fade_out_text()
+        """Update transcript text. Smooth bottom-to-top entrance on initial speech, seamless live updates while streaming."""
+        text = text.strip() if text else ""
+        current_text = self.label.text().strip()
+        is_placeholder = current_text in ("Listening…", "Listening...", "")
+
         if not text:
-            self.label.setText("Listening…")
-            self.label.setStyleSheet(
-                "color: rgba(244,244,245,0.55); background: transparent; font-style: italic;")
-        else:
+            if not is_placeholder:
+                self.label.fade_out_text()
+                QTimer.singleShot(160, lambda: self.label.setText("Listening…"))
+                self.label.setStyleSheet(
+                    "color: rgba(244,244,245,0.55); background: transparent; font-style: italic;")
+            return
+
+        if current_text == text:
+            return
+
+        self.setAccessibleName(text)
+
+        if is_placeholder:
+            # First speech result replacing placeholder: smooth bottom-to-top entrance
             self.label.setText(text)
             self.label.setStyleSheet(
                 "color: rgba(244,244,245,0.92); background: transparent; font-style: normal;")
-            self.setAccessibleName(text)
-        # Delay text fade-in depending on pill open state
-        if self._pill_opacity > 0.3:
-            QTimer.singleShot(80, self.label.fade_in_text)
+            if self._pill_opacity > 0.3:
+                QTimer.singleShot(40, self.label.fade_in_text)
+            else:
+                QTimer.singleShot(120, self.label.fade_in_text)
         else:
-            QTimer.singleShot(180, self.label.fade_in_text)
+            # Streaming updates while speaking: live direct update with full opacity
+            self.label.set_text_live(text)
 
     def set_discarded(self):
         self.label.setStyleSheet("color: rgba(244,244,245,0.40); background: transparent;")

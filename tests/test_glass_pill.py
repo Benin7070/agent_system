@@ -44,6 +44,28 @@ def test_pill_set_transcript_updates_label():
     assert "Hello" in card.label.text()
 
 
+def test_pill_live_streaming_updates():
+    """Live streaming interim results must update text directly with full opacity."""
+    from agentctl.ui.transcript import TranscriptCard
+    app = _app()
+    card = TranscriptCard()
+    card._pill_opacity = 1.0
+
+    # 1. Initial placeholder to first word
+    card.set_transcript("Hello")
+    assert card.label.text() == "Hello"
+
+    # 2. Subsequent live streaming words
+    card.set_transcript("Hello can you")
+    assert card.label.text() == "Hello can you"
+    assert card.label._opacity_fx.opacity() == 1.0
+
+    # 3. Further streaming words
+    card.set_transcript("Hello can you hear me?")
+    assert card.label.text() == "Hello can you hear me?"
+    assert card.label._opacity_fx.opacity() == 1.0
+
+
 def test_vignette_asset_exists():
     """The vignette PNG asset must be loadable as a valid QPixmap."""
     from PyQt6.QtGui import QPixmap

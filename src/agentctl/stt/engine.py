@@ -139,6 +139,8 @@ class SttEngine:
                 best_of=1,
                 temperature=0.0,
                 condition_on_previous_text=False,
+                without_timestamps=True,
+                vad_filter=False,
                 language="en",
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
@@ -161,6 +163,8 @@ class SttEngine:
                     best_of=1,
                     temperature=0.0,
                     condition_on_previous_text=False,
+                    without_timestamps=True,
+                    vad_filter=False,
                     language="en",
                 )
                 return " ".join(seg.text.strip() for seg in segments).strip()

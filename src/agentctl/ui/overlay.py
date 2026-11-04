@@ -78,7 +78,7 @@ class SttWorker(threading.Thread):
         self._partial_thread: Optional[threading.Thread] = None
         self.mic = MicrophoneStream()
         self.vad = SilenceAccumulator(silence_threshold_ms=SILENCE_CUTOFF_MS, calibration_frames=22)
-        self.engine = SttEngine(model_size="base.en", cpu_threads=2)
+        self.engine = SttEngine(model_size="base.en", cpu_threads=4)
 
     def run(self):
         self._running = True
@@ -135,25 +135,25 @@ class SttWorker(threading.Thread):
                 last_audio_log = now
 
             # Delta-Speech Gated partial transcription:
-            # ONLY triggers if at least 650ms of NEW speech frames were added.
+            # Triggers after 240ms of NEW speech frames (rapid live interim results).
             # Never triggers during silence, keeping CPU usage near 0% when quiet.
             if (
                 self.vad.has_spoken
                 and not self._is_transcribing
                 and self._running
-                and self.vad.should_trigger_partial(min_new_speech_ms=650)
+                and self.vad.should_trigger_partial(min_new_speech_ms=240)
             ):
                 self._is_transcribing = True
                 audio_snapshot = self.vad.get_speech_audio_bytes()
                 dur_sec = len(audio_snapshot) / 32000.0
-                logger.whisper(f">>> Partial pass triggered (audio_snapshot={dur_sec:.2f}s, delta_frames>=32)...")
+                logger.whisper(f">>> Partial pass triggered (audio_snapshot={dur_sec:.2f}s, delta_frames>=12)...")
 
                 def _async_partial(audio_data):
                     t0 = time.time()
                     try:
                         text = self.engine.transcribe_bytes(audio_data)
                         elapsed = time.time() - t0
-                        if text and self._running:
+                        if text:
                             logger.whisper(f"<<< Partial result in {elapsed:.2f}s: \"{text}\"")
                             self.on_partial(text)
                         else:
