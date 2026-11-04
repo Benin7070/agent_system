@@ -1,0 +1,14 @@
+[Unit]
+Description=AgentCTL Orchestrator Daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/agentctl-daemon
+Restart=on-failure
+RestartSec=2s
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+[Install]
+WantedBy=default.target
+

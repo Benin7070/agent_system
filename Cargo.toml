@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "crates/agentctl-daemon",
+]
+resolver = "2"
+

@@ -1,0 +1,22 @@
+Metadata-Version: 2.4
+Name: agentctl
+Version: 0.1.0
+Summary: AgentCTL - Linux Orchestrator & Voice UI
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: PyQt6>=6.7
+Requires-Dist: PyQt6-Qt6>=6.7
+Requires-Dist: PyOpenGL>=3.1
+Requires-Dist: faster-whisper>=1.0
+Requires-Dist: sounddevice>=0.4
+Requires-Dist: webrtcvad-wheels>=2.0
+Requires-Dist: numpy>=1.26
+Requires-Dist: httpx>=0.27
+Requires-Dist: plyer>=2.1
+
+# AgentCTL
+
+AgentCTL is a Linux orchestrator daemon for AI agents with a premium Siri-inspired voice activation overlay.
+
+See `ARCHITECTURE.md` in the brain directory for the architectural specification.
+

@@ -1,0 +1,25 @@
+[project]
+name = "agentctl"
+version = "0.1.0"
+description = "AgentCTL - Linux Orchestrator & Voice UI"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "PyQt6>=6.7",
+    "PyQt6-Qt6>=6.7",
+    "PyOpenGL>=3.1",
+    "faster-whisper>=1.0",
+    "sounddevice>=0.4",
+    "webrtcvad-wheels>=2.0",
+    "numpy>=1.26",
+    "httpx>=0.27",
+    "plyer>=2.1",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
