@@ -2,7 +2,7 @@ pub mod handlers;
 
 use self::handlers::{
     activate_handler, approve_handler, cancel_handler, deny_handler, intent_handler, kill_handler,
-    level_handler, status_handler, ws_handler, AppState,
+    level_handler, loglevel_handler, status_handler, status_snapshot_handler, ws_handler, AppState,
 };
 use axum::{
     routing::{get, post},
@@ -22,6 +22,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/cancel", post(cancel_handler))
         .route("/intent", post(intent_handler))
         .route("/status", get(status_handler))
+        .route("/status/snapshot", get(status_snapshot_handler))
+        .route("/loglevel", post(loglevel_handler))
         .route("/approve", post(approve_handler))
         .route("/deny", post(deny_handler))
         .route("/kill", post(kill_handler))

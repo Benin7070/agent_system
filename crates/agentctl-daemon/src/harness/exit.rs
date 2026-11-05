@@ -76,29 +76,3 @@ pub fn is_exit_utterance(text: &str, custom_phrases: Option<&[&str]>) -> bool {
 
     false
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_positive_exit_phrases() {
-        assert!(is_exit_utterance("bye bye", None));
-        assert!(is_exit_utterance("okay bye bye", None));
-        assert!(is_exit_utterance("exit", None));
-        assert!(is_exit_utterance("that's all, thanks", None));
-        assert!(is_exit_utterance("goodbye", None));
-        assert!(is_exit_utterance("quit", None));
-        assert!(is_exit_utterance("Alright, that's all!", None));
-        assert!(is_exit_utterance("Bye!", None));
-    }
-
-    #[test]
-    fn test_negative_exit_phrases() {
-        assert!(!is_exit_utterance("how do you say bye in French", None));
-        assert!(!is_exit_utterance("tell me about the exit strategy", None));
-        assert!(!is_exit_utterance("goodbye moonlight is a song", None));
-        assert!(!is_exit_utterance("the exit is on the left", None));
-        assert!(!is_exit_utterance("I really have to go now so bye bye my dear friend", None));
-    }
-}

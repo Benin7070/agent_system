@@ -81,24 +81,3 @@ impl ConversationHistory {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_history_sliding_window() {
-        let mut hist = ConversationHistory::new(2); // 2 turns = 4 messages
-        hist.add_user_message("u1");
-        hist.add_assistant_message("a1");
-        hist.add_user_message("u2");
-        hist.add_assistant_message("a2");
-        assert_eq!(hist.len(), 4);
-
-        hist.add_user_message("u3");
-        hist.add_assistant_message("a3");
-        assert_eq!(hist.len(), 4);
-        assert_eq!(hist.get_messages()[0].content, "u2");
-        assert_eq!(hist.get_messages()[3].content, "a3");
-    }
-}
-

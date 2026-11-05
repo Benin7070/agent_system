@@ -8,7 +8,7 @@ import webrtcvad
 class VadDetector:
     """Voice Activity Detector with WebRTC VAD, energy thresholding, and noise gating."""
 
-    def __init__(self, sample_rate: int = 16000, frame_duration_ms: int = 20, mode: int = 2):
+    def __init__(self, sample_rate: int = 16000, frame_duration_ms: int = 20, mode: int = 3):
         self.sample_rate = sample_rate
         self.frame_duration_ms = frame_duration_ms
         self.frame_size = int(sample_rate * (frame_duration_ms / 1000.0) * 2)  # 16-bit PCM = 2 bytes/sample
@@ -60,7 +60,7 @@ class SilenceAccumulator:
         min_speech_frames: int = 12,  # at least 240ms of speech before silence can trigger
         calibration_frames: int = 0,  # Number of frames to calibrate ambient noise floor (0 = disabled)
     ):
-        self.vad = VadDetector(sample_rate, frame_duration_ms, mode=2)
+        self.vad = VadDetector(sample_rate, frame_duration_ms, mode=3)
         self.frame_duration_ms = frame_duration_ms
         self.silence_threshold_frames = int(silence_threshold_ms / frame_duration_ms)
         self.min_speech_frames = min_speech_frames
@@ -170,7 +170,7 @@ class SilenceAccumulator:
 
         return b"".join(clean_frames)
 
-    def reset(self):
+    def reset(self, recalibrate: bool = False):
         self.pre_speech_ring.clear()
         self.speech_frames.clear()
         self.has_spoken = False
@@ -178,3 +178,6 @@ class SilenceAccumulator:
         self.consecutive_silent_frames = 0
         self.untranscribed_speech_frames = 0
         self.speech_hangover = 0
+        if recalibrate:
+            self.calibration_count = 0
+            self.ambient_energy_samples.clear()

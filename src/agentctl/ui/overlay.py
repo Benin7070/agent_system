@@ -72,7 +72,14 @@ def on_tts_audio_chunk(pcm_chunk: bytes, ws_client: Optional[DaemonWsClient] = N
 class SttWorker(threading.Thread):
     """Background audio listener reading mic frames and running non-blocking VAD/Whisper."""
 
-    def __init__(self, on_partial, on_final, on_intensity, ws_client: Optional[DaemonWsClient] = None):
+    def __init__(
+        self,
+        on_partial,
+        on_final,
+        on_intensity,
+        ws_client: Optional[DaemonWsClient] = None,
+        engine: Optional[SttEngine] = None,
+    ):
         super().__init__(daemon=True)
         self.on_partial = on_partial
         self.on_final = on_final
@@ -81,9 +88,11 @@ class SttWorker(threading.Thread):
         self._running = False
         self._is_transcribing = False
         self._partial_thread: Optional[threading.Thread] = None
+        self._last_partial_text = ""
+        self._last_partial_time = 0.0
         self.mic = MicrophoneStream()
         self.vad = SilenceAccumulator(silence_threshold_ms=SILENCE_CUTOFF_MS, calibration_frames=22)
-        self.engine = SttEngine(model_size="base.en", cpu_threads=4)
+        self.engine = engine or SttEngine(model_size="base.en", cpu_threads=4)
 
     def run(self):
         self._running = True
@@ -161,6 +170,10 @@ class SttWorker(threading.Thread):
                         if text:
                             logger.whisper(f"<<< Partial result in {elapsed:.2f}s: \"{text}\"")
                             self.on_partial(text)
+                            clean = text.strip()
+                            if clean != self._last_partial_text:
+                                self._last_partial_text = clean
+                                self._last_partial_time = time.time()
                         else:
                             logger.whisper(f"<<< Partial result in {elapsed:.2f}s: (empty/noise)")
                     except Exception as e:
@@ -184,6 +197,8 @@ class SttWorker(threading.Thread):
                 logger.whisper(f">>> Final transcription pass on {dur_sec:.2f}s audio (trailing silence clipped)...")
                 t0 = time.time()
                 final = self.engine.transcribe_bytes(speech_bytes)
+                if not final and self._last_partial_text:
+                    final = self._last_partial_text
                 elapsed = time.time() - t0
 
                 if final:
@@ -192,9 +207,11 @@ class SttWorker(threading.Thread):
                 else:
                     logger.warn("WHISPER", f"<<< Final result in {elapsed:.2f}s was empty.")
 
-                # Re-arm VAD for next turn in multi-turn conversation loop
-                self.vad.reset()
+                # Re-arm VAD for next turn in multi-turn conversation loop (recalibrating to current fan noise)
+                self.vad.reset(recalibrate=True)
                 was_spoken = False
+                self._last_partial_text = ""
+                self._last_partial_time = 0.0
 
     def stop(self):
         self._running = False
@@ -266,9 +283,10 @@ class AgentOverlayWindow(QWidget):
         self.ws_opacity_signal.connect(self._handle_ws_opacity)
         self.tts_chunk_signal.connect(self._handle_tts_chunk)
         self.exit_signal.connect(self._handle_exit)
-        self.orb.closed.connect(self._on_exit_finished)
+        self.orb.closed.connect(self._on_dismiss_finished)
 
         self.stt_worker: Optional[SttWorker] = None
+        self._is_active = False
         self._is_closing = False
 
         # Kokoro TTS engine and streaming audio player
@@ -279,6 +297,9 @@ class AgentOverlayWindow(QWidget):
             on_finished=lambda: self.ws_client.send_playback_finished() if hasattr(self, "ws_client") else None,
         )
         self.tts_player.start()
+
+        # Shared STT engine resident in memory
+        self.stt_engine = SttEngine(model_size="base.en", cpu_threads=4)
 
         # WebSocket push client (replaces polling timer)
         self.ws_client = DaemonWsClient(
@@ -331,25 +352,30 @@ class AgentOverlayWindow(QWidget):
     def _handle_ws_state(self, state_name: str):
         """Dispatches daemon state push events to the orb."""
         logger.info("FSM", f"Push state event received: {state_name}")
+        state_name = state_name.lower()
+
+        # If daemon enters listening while overlay is hidden/idle, wake up immediately!
+        if state_name == "listening" and not self._is_active:
+            self.activate_and_show()
+            return
+
         if self._is_closing:
             return
 
-        state_name = state_name.lower()
-        if state_name in ("idle", "closing") and self._is_closing:
+        if state_name in ("idle", "closing", "cancelling"):
+            if self._is_active:
+                self.dismiss_and_hide()
             return
 
-        if state_name == "closing":
-            self.cancel_and_exit()
-        else:
-            self.orb.set_state(state_name)
-            self.edge_glow.set_state(state_name)
-            if state_name == "listening":
-                self.transcript_card.set_transcript("Listening...")
-                self.transcript_card.animate_in()
+        self.orb.set_state(state_name)
+        self.edge_glow.set_state(state_name)
+        if state_name == "listening":
+            self.transcript_card.set_transcript("Listening...")
+            self.transcript_card.animate_in()
 
     def _handle_ws_level(self, level: float):
         """Sets smoothed reactive audio/activity level on the orb and border."""
-        if not self._is_closing:
+        if not self._is_closing and self._is_active:
             self.orb.set_level(level)
             self.edge_glow.set_level(level)
 
@@ -358,6 +384,11 @@ class AgentOverlayWindow(QWidget):
 
     def activate_and_show(self):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
+        if self._is_active:
+            logger.info("UI", "Overlay is already active.")
+            return
+        self._is_active = True
+        self._is_closing = False
         logger.info("UI", "Overlay activated. Playing opening animation...")
         self._position_on_screen()
         # On Wayland compositors (COSMIC cosmic-comp, GNOME Mutter), calling showFullScreen()
@@ -382,14 +413,18 @@ class AgentOverlayWindow(QWidget):
         # One-shot pop-in animation on orb, edge border glow, and smooth text box entrance
         self.orb.play_opening()
         self.edge_glow.play_opening()
+        self.transcript_card.set_transcript("Listening...")
         self.transcript_card.animate_in()
 
-        # Start STT background worker
+        # Start STT background worker using shared resident Whisper engine
+        if self.stt_worker and self.stt_worker.is_alive():
+            self.stt_worker.stop()
         self.stt_worker = SttWorker(
             on_partial=lambda t: self.partial_signal.emit(t),
             on_final=lambda t: self.final_signal.emit(t),
             on_intensity=lambda i: self.intensity_signal.emit(i),
             ws_client=self.ws_client,
+            engine=self.stt_engine,
         )
         self.stt_worker.start()
         self.tts_player.mic = self.stt_worker.mic
@@ -412,6 +447,13 @@ class AgentOverlayWindow(QWidget):
 
         # Send intent to daemon for harness processing
         try:
+            if self.ws_client:
+                self.ws_client.send_event(
+                    "pipeline.stt_result",
+                    "stt",
+                    "STT transcription completed",
+                    {"word_count": len(text.split()), "confidence": 0.95},
+                )
             self.client.send_intent(text)
         except Exception as e:
             logger.warn("UI", f"Send intent error: {e}")
@@ -429,7 +471,7 @@ class AgentOverlayWindow(QWidget):
 
     def _handle_tts_level(self, level: float):
         """Live audio loudness meter update during speech playback."""
-        if not self._is_closing:
+        if not self._is_closing and self._is_active:
             self.orb.set_level(level)
             self.edge_glow.set_level(level)
 
@@ -437,24 +479,26 @@ class AgentOverlayWindow(QWidget):
         """Exit phrase detected by daemon."""
         self.end_session(goodbye_msg)
 
-    def end_session(self, goodbye_msg: Optional[str] = None):
-        """Unified session exit: speaks goodbye, plays closing animation, and exits cleanly."""
-        if self._is_closing:
+    def dismiss_and_hide(self, goodbye_msg: Optional[str] = None):
+        """Cleanly dismisses overlay and stays warm in memory for instant hotkey response."""
+        if self._is_closing or not self._is_active:
             return
-        logger.info("UI", "Session end: playing goodbye line then dismissing overlay...")
         self._is_closing = True
+        logger.info("UI", "Session end: dismissing overlay (keeping warm in RAM)...")
 
-        msg = goodbye_msg or "Goodbye!"
-        try:
-            samples, sr = self.tts_engine.synthesize(msg)
-            import sounddevice as sd
-            sd.play(samples, sr)
-            sd.wait()
-        except Exception as e:
-            logger.warn("TTS", f"Could not play goodbye audio: {e}")
+        if goodbye_msg:
+            try:
+                samples, sr = self.tts_engine.synthesize(goodbye_msg)
+                import sounddevice as sd
+                sd.play(samples, sr)
+                sd.wait()
+            except Exception as e:
+                logger.warn("TTS", f"Could not play goodbye audio: {e}")
 
+        # Stop mic immediately to protect user privacy
         if self.stt_worker:
             self.stt_worker.stop()
+            self.stt_worker = None
         if hasattr(self, "tts_player") and self.tts_player:
             self.tts_player.stop()
 
@@ -462,8 +506,21 @@ class AgentOverlayWindow(QWidget):
         self.orb.play_closing()
         self.edge_glow.play_closing()
 
-        # Clean exit after closing animation finishes
-        QTimer.singleShot(800, self._on_exit_finished)
+        # Wait for closing animation then hide window
+        QTimer.singleShot(400, self._on_dismiss_finished)
+
+    def _on_dismiss_finished(self):
+        """Hides the UI widgets while keeping the process warm in memory."""
+        self.hide()
+        if hasattr(self, "edge_glow"):
+            self.edge_glow.hide()
+        self._is_active = False
+        self._is_closing = False
+        logger.info("UI", "Overlay dismissed (resident warm in memory, ready for instant hotkey wakeup).")
+
+    def end_session(self, goodbye_msg: Optional[str] = None):
+        """Unified session exit: speaks goodbye, animates out, and keeps warm in memory."""
+        self.dismiss_and_hide(goodbye_msg)
 
     def cancel_and_exit(self):
         """Hotkey re-press or Esc cancellation path."""
@@ -471,15 +528,16 @@ class AgentOverlayWindow(QWidget):
             self.client.cancel()
         except Exception as e:
             logger.warn("UI", f"Cancel request error: {e}")
+        self.dismiss_and_hide()
 
-        self.end_session()
-
-    def _on_exit_finished(self):
-        """Clean teardown: stops timers, workers, and immediately releases all memory."""
+    def force_quit(self):
+        """True process teardown on daemon shutdown or process termination."""
         if self.stt_worker:
             self.stt_worker.stop()
         if hasattr(self, "ws_client") and self.ws_client:
             self.ws_client.stop()
+        if hasattr(self, "tts_player") and self.tts_player:
+            self.tts_player.stop()
         if hasattr(self, "edge_glow"):
             self.edge_glow.close()
         self.close()
@@ -489,11 +547,12 @@ class AgentOverlayWindow(QWidget):
         os._exit(0)
 
     def closeEvent(self, event):
-        self._on_exit_finished()
+        self.force_quit()
         event.accept()
 
 
 def main():
+    start_hidden = "--warm" in sys.argv or "--hidden" in sys.argv
     OrbWidget.configure_format()
     app = QApplication(sys.argv)
     pal = app.palette()
@@ -501,8 +560,20 @@ def main():
     pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
     app.setPalette(pal)
     app.setStyleSheet("QWidget { background: transparent; }")
+
+    # Handle OS termination signals cleanly
+    import signal
+    def _sig_handler(sig, frame):
+        logger.info("UI", f"Received signal {sig}. Exiting overlay process.")
+        app.quit()
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
+
     window = AgentOverlayWindow()
-    window.activate_and_show()
+    if not start_hidden:
+        window.activate_and_show()
     sys.exit(app.exec())
 
 

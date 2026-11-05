@@ -3,6 +3,7 @@
 pub mod exit;
 pub mod history;
 pub mod llm;
+pub mod local_manager;
 pub mod session;
 pub mod speech_style;
 

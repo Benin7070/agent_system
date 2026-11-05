@@ -2,14 +2,21 @@
 
 use agentctl_daemon::fsm::states::FsmState;
 use agentctl_daemon::fsm::OrchestratorFsm;
-use agentctl_daemon::harness::history::ChatMessage;
-use agentctl_daemon::harness::llm::{LlmBackend, LlmError, OpenAiBackend, OpenAiConfig};
+use agentctl_daemon::harness::exit::is_exit_utterance;
+use agentctl_daemon::harness::history::{ChatMessage, ConversationHistory};
+use agentctl_daemon::harness::llm::{
+    FallbackRouterBackend, LlmBackend, LlmError, LocalLlmBackend, LocalLlmConfig,
+    OpenAiBackend, OpenAiConfig,
+};
 use agentctl_daemon::harness::session::{
     HarnessConfig, HarnessSession, SessionEvent, MSG_CANT_REACH_BRAIN, MSG_GOODBYE,
     MSG_NO_API_KEY,
 };
+use agentctl_daemon::harness::speech_style::{
+    build_system_prompt, normalize_for_tts, split_into_tts_chunks,
+};
 use async_trait::async_trait;
-use futures_util::Stream;
+use futures_util::{Stream, StreamExt};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -195,4 +202,172 @@ fn test_secret_handling_never_leaks_api_key() {
     let debug_str = format!("{:?}", err);
     assert!(!err_str.contains(secret));
     assert!(!debug_str.contains(secret));
+}
+
+#[tokio::test]
+async fn test_fallback_router_uses_primary_when_healthy() {
+    let call_count_primary = Arc::new(AtomicUsize::new(0));
+    let call_count_fallback = Arc::new(AtomicUsize::new(0));
+
+    let primary = Arc::new(MockLlm {
+        reply: "Reply from local primary model.".to_string(),
+        call_count: call_count_primary.clone(),
+    });
+    let fallback = Arc::new(MockLlm {
+        reply: "Reply from cloud fallback model.".to_string(),
+        call_count: call_count_fallback.clone(),
+    });
+
+    let router = FallbackRouterBackend::new(primary, Some(fallback), "test-local");
+    let mut stream = router
+        .stream_reply(&[], "hello")
+        .await
+        .expect("Stream should succeed");
+
+    let mut tokens = Vec::new();
+    while let Some(tok_res) = stream.next().await {
+        tokens.push(tok_res.unwrap());
+    }
+
+    assert_eq!(call_count_primary.load(Ordering::SeqCst), 1);
+    assert_eq!(call_count_fallback.load(Ordering::SeqCst), 0);
+    assert_eq!(tokens.join(""), "Reply from local primary model. ");
+}
+
+#[tokio::test]
+async fn test_fallback_router_falls_back_on_primary_failure() {
+    let call_count_fallback = Arc::new(AtomicUsize::new(0));
+
+    let primary = Arc::new(FailingLlm {
+        err: LlmError::Network("Connection refused (os error 111)".to_string()),
+    });
+    let fallback = Arc::new(MockLlm {
+        reply: "Fallback to cloud succeeded.".to_string(),
+        call_count: call_count_fallback.clone(),
+    });
+
+    let router = FallbackRouterBackend::new(primary, Some(fallback), "test-local");
+    let mut stream = router
+        .stream_reply(&[], "hello")
+        .await
+        .expect("Fallback should succeed");
+
+    let mut tokens = Vec::new();
+    while let Some(tok_res) = stream.next().await {
+        tokens.push(tok_res.unwrap());
+    }
+
+    assert_eq!(call_count_fallback.load(Ordering::SeqCst), 1);
+    assert_eq!(tokens.join(""), "Fallback to cloud succeeded. ");
+}
+
+#[test]
+fn test_local_llm_config_defaults() {
+    let cfg = LocalLlmConfig::default();
+    assert_eq!(cfg.agent_name, "Bella");
+    assert_eq!(cfg.user_name, "Benin");
+    assert!(cfg.endpoint.contains("8080"));
+    assert_eq!(cfg.model, "qwen3.5-9b");
+}
+
+#[tokio::test]
+async fn test_live_local_llm_backend_stream() {
+    let backend = LocalLlmBackend::new(LocalLlmConfig::default());
+    match backend.stream_reply(&[], "Say hi in one word").await {
+        Ok(mut stream) => {
+            let mut words = Vec::new();
+            while let Some(tok) = stream.next().await {
+                if let Ok(t) = tok {
+                    words.push(t);
+                }
+            }
+            assert!(!words.is_empty(), "Should receive tokens from local llama-server");
+            eprintln!("Live Local LLM response: {}", words.join(""));
+        }
+        Err(e) => {
+            eprintln!("Local LLM not running or error: {:?} (skipping)", e);
+        }
+    }
+}
+
+#[test]
+fn test_history_sliding_window() {
+    let mut hist = ConversationHistory::new(2);
+    hist.add_user_message("u1");
+    hist.add_assistant_message("a1");
+    hist.add_user_message("u2");
+    hist.add_assistant_message("a2");
+    assert_eq!(hist.len(), 4);
+
+    hist.add_user_message("u3");
+    hist.add_assistant_message("a3");
+    assert_eq!(hist.len(), 4);
+    assert_eq!(hist.get_messages()[0].content, "u2");
+    assert_eq!(hist.get_messages()[3].content, "a3");
+}
+
+#[test]
+fn test_positive_exit_phrases() {
+    assert!(is_exit_utterance("bye bye", None));
+    assert!(is_exit_utterance("okay bye bye", None));
+    assert!(is_exit_utterance("exit", None));
+    assert!(is_exit_utterance("that's all, thanks", None));
+    assert!(is_exit_utterance("goodbye", None));
+    assert!(is_exit_utterance("quit", None));
+    assert!(is_exit_utterance("Alright, that's all!", None));
+    assert!(is_exit_utterance("Bye!", None));
+}
+
+#[test]
+fn test_negative_exit_phrases() {
+    assert!(!is_exit_utterance("how do you say bye in French", None));
+    assert!(!is_exit_utterance("tell me about the exit strategy", None));
+    assert!(!is_exit_utterance("goodbye moonlight is a song", None));
+    assert!(!is_exit_utterance("the exit is on the left", None));
+    assert!(!is_exit_utterance("I really have to go now so bye bye my dear friend", None));
+}
+
+#[test]
+fn test_system_prompt_contains_names() {
+    let prompt = build_system_prompt("Bella", "Benin");
+    assert!(prompt.contains("Bella"));
+    assert!(prompt.contains("Benin"));
+    assert!(prompt.contains("Tamil"));
+}
+
+#[test]
+fn test_normalize_markdown_and_emoji() {
+    let input = "Hello **Benin**! 😊 Here is `code` and [link](https://example.com).";
+    let out = normalize_for_tts(input);
+    assert!(!out.contains("**"));
+    assert!(!out.contains("😊"));
+    assert!(!out.contains("https://example.com"));
+    assert!(out.contains("Hello Benin"));
+    assert!(out.contains("link"));
+}
+
+#[test]
+fn test_normalize_numbers_and_currency() {
+    let input = "The price is $42 and inflation is 5.5% at 10:30.";
+    let out = normalize_for_tts(input);
+    assert!(out.contains("forty-two dollars"));
+    assert!(out.contains("five point five percent"));
+    assert!(out.contains("ten thirty"));
+}
+
+#[test]
+fn test_normalize_abbreviations() {
+    let input = "Dr. Smith went to St. John St. at approx. 50 mph.";
+    let out = normalize_for_tts(input);
+    assert!(out.contains("Doctor Smith"));
+    assert!(out.contains("approximately"));
+    assert!(out.contains("miles per hour"));
+}
+
+#[test]
+fn test_split_into_chunks_preserves_sentences() {
+    let input = "First sentence is short. Second sentence is also short! Third sentence wraps up.";
+    let chunks = split_into_tts_chunks(input, 200);
+    assert!(!chunks.is_empty());
+    assert_eq!(chunks.join(" "), normalize_for_tts(input));
 }

@@ -74,6 +74,7 @@ fn test_api_responses_roundtrip() {
         state: "LISTENING".to_string(),
         task_id: Some("task-42".to_string()),
         error: None,
+        details: None,
     };
     let resp = ApiResponse::success(status.clone());
     let json = serde_json::to_string(&resp).unwrap();

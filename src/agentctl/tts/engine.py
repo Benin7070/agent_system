@@ -54,7 +54,7 @@ class KokoroTtsEngine:
             self._kokoro = None
 
     def _precache_fixed_lines(self):
-        """Pre-generates and caches fixed prompts for zero-latency response."""
+        """Pre-generates and caches fixed prompts for zero-latency response with disk persistence."""
         fixed_lines = {
             "goodbye": "Goodbye!",
             "cant_reach_brain": "Sorry, I can't reach my brain right now.",
@@ -65,14 +65,40 @@ class KokoroTtsEngine:
         if not self._kokoro:
             return
 
+        cache_dir = Path("~/.local/share/agentctl/cache/tts_prompts").expanduser()
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        loaded_disk = 0
         for key, text in fixed_lines.items():
+            cache_file = cache_dir / f"{self.voice}_{key}.npz"
+            if cache_file.exists():
+                try:
+                    data = np.load(cache_file)
+                    samples = data["samples"]
+                    sr = int(data["sr"])
+                    self._cache[key] = (samples, sr)
+                    loaded_disk += 1
+                    continue
+                except Exception as e:
+                    logger.warn("TTS", f"Corrupt prompt cache for '{key}', re-synthesizing: {e}")
+
             try:
                 samples, sr = self.synthesize_direct(text)
                 self._cache[key] = (samples, sr)
+                try:
+                    np.savez_compressed(cache_file, samples=samples, sr=sr)
+                except Exception as e:
+                    logger.warn("TTS", f"Could not write prompt cache for '{key}': {e}")
             except Exception as e:
                 logger.warn("TTS", f"Failed to pre-cache fixed line '{key}': {e}")
 
-        logger.info("TTS", f"Pre-cached {len(self._cache)} fixed vocal responses.")
+        if loaded_disk == len(fixed_lines):
+            logger.info("TTS", f"Loaded {len(self._cache)} fixed vocal responses from disk cache (0s delay).")
+        else:
+            logger.info("TTS", f"Pre-cached {len(self._cache)} fixed vocal responses ({loaded_disk} from disk).")
 
     def get_cached(self, key: str) -> Optional[Tuple[np.ndarray, int]]:
         return self._cache.get(key)

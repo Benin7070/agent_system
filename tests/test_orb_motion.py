@@ -3,8 +3,8 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ORB_DIR = HERE.parent
-ASSETS = ORB_DIR / "assets"
+REPO_ROOT = HERE.parent
+ASSETS = REPO_ROOT / "src" / "agentctl" / "ui" / "orb" / "assets"
 META = ASSETS / "orb_meta.json"
 
 try:

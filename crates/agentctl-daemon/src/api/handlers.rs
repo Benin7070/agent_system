@@ -7,6 +7,8 @@ use crate::core::schemas::{
 use crate::fsm::states::FsmState;
 use crate::fsm::OrchestratorFsm;
 use crate::harness::session::{HarnessConfig, HarnessSession, SessionEvent};
+use crate::logging::{LogConfig, LogLevel, Logger};
+use crate::status::{DaemonStatus, StatusManager};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -27,10 +29,27 @@ pub struct AppState {
     pub level_tx: watch::Sender<f32>,
     pub harness: Arc<HarnessSession>,
     pub session_event_tx: broadcast::Sender<SessionEvent>,
+    pub logger: Arc<Logger>,
+    pub status: Arc<StatusManager>,
 }
 
 impl AppState {
     pub fn new(fsm: OrchestratorFsm, gate: ApprovalGate, audit: AuditLog) -> Self {
+        let log_config = LogConfig::default();
+        let logger = Logger::new(log_config, LogLevel::Info);
+        let status = Arc::new(StatusManager::new(
+            crate::logging::get_default_log_dir().display().to_string(),
+        ));
+        Self::with_logger_and_status(fsm, gate, audit, logger, status)
+    }
+
+    pub fn with_logger_and_status(
+        fsm: OrchestratorFsm,
+        gate: ApprovalGate,
+        audit: AuditLog,
+        logger: Arc<Logger>,
+        status: Arc<StatusManager>,
+    ) -> Self {
         let (level_tx, _) = watch::channel(0.0f32);
         let (session_event_tx, _) = broadcast::channel(64);
 
@@ -45,7 +64,10 @@ impl AppState {
             user_name,
             ..Default::default()
         };
-        let harness = Arc::new(HarnessSession::new(harness_config, fsm.clone(), None));
+        let harness = Arc::new(
+            HarnessSession::new(harness_config, fsm.clone(), None)
+                .with_telemetry(logger.clone(), status.clone()),
+        );
 
         Self {
             fsm,
@@ -54,6 +76,8 @@ impl AppState {
             level_tx,
             harness,
             session_event_tx,
+            logger,
+            status,
         }
     }
 }
@@ -71,6 +95,7 @@ pub async fn activate_handler(
                 state: s.as_str().to_string(),
                 task_id: None,
                 error: None,
+                details: None,
             }))
         }
         Err(e) => Json(ApiResponse::error(e.to_string())),
@@ -113,12 +138,43 @@ pub async fn status_handler(
 ) -> Json<ApiResponse<StatusResponse>> {
     let s = state.fsm.get_state().await;
     let task = state.fsm.get_current_task().await;
+    let snapshot = state.status.get_snapshot().await;
 
     Json(ApiResponse::success(StatusResponse {
         state: s.as_str().to_string(),
         task_id: task,
         error: None,
+        details: serde_json::to_value(&snapshot).ok(),
     }))
+}
+
+pub async fn status_snapshot_handler(
+    State(state): State<Arc<AppState>>,
+) -> Json<DaemonStatus> {
+    Json(state.status.get_snapshot().await)
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LogLevelRequest {
+    pub level: String,
+}
+
+pub async fn loglevel_handler(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<LogLevelRequest>,
+) -> Json<ApiResponse<String>> {
+    if let Some(lvl) = LogLevel::from_str_loose(&payload.level) {
+        state.logger.set_level(lvl);
+        state.logger.info(
+            "config.log_level",
+            "config",
+            format!("Log level dynamically set to {}", lvl),
+            json!({ "level": lvl.as_str() }),
+        );
+        Json(ApiResponse::success(format!("Log level set to {}", lvl)))
+    } else {
+        Json(ApiResponse::error(format!("Invalid log level: {}", payload.level)))
+    }
 }
 
 pub async fn intent_handler(
@@ -170,6 +226,7 @@ pub async fn intent_handler(
         state: "PROCESSING".to_string(),
         task_id: Some(task_id),
         error: None,
+        details: None,
     }))
 }
 
@@ -263,51 +320,129 @@ pub async fn ws_handler(
 
 async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
     let (mut sender, mut receiver) = socket.split();
+    let client_id = format!("client-{}", chrono::Utc::now().timestamp_millis());
 
-    // 1. Send initial state immediately upon connection
+    state.status.record_client_connect(&client_id, "unknown").await;
+    state.logger.info(
+        "client.connect",
+        "client",
+        format!("Client {} connected", client_id),
+        json!({ "client_id": &client_id, "role": "unknown" }),
+    );
+
+    // 1. Send initial state and status snapshot immediately upon connection
     let initial_state = state.fsm.get_state().await.to_ui_state();
     let init_msg = json!({
         "type": "state",
         "state": initial_state
     });
-    if sender
-        .send(Message::Text(init_msg.to_string()))
-        .await
-        .is_err()
-    {
-        return;
-    }
+    let _ = sender.send(Message::Text(init_msg.to_string())).await;
+
+    let snapshot = state.status.get_snapshot().await;
+    let snap_msg = json!({
+        "type": "status_snapshot",
+        "data": snapshot
+    });
+    let _ = sender.send(Message::Text(snap_msg.to_string())).await;
 
     let mut state_rx = state.fsm.subscribe_state();
     let mut level_rx = state.level_tx.subscribe();
     let mut session_event_rx = state.session_event_tx.subscribe();
 
-    // Spawn reader task to handle incoming client messages (e.g., client level pushes or pings)
+    // Channel for reader to send responses back to writer
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<String>(32);
+
+    // Spawn reader task to handle incoming client messages
     let state_clone = state.clone();
+    let cid_clone = client_id.clone();
     let mut read_task = tokio::spawn(async move {
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                     let msg_type = val.get("type").and_then(|t| t.as_str());
-                    if msg_type == Some("level") {
-                        if let Some(lvl) = val.get("value").and_then(|v| v.as_f64()) {
-                            let _ = state_clone.level_tx.send((lvl as f32).clamp(0.0, 1.0));
+                    match msg_type {
+                        Some("level") => {
+                            if let Some(lvl) = val.get("value").and_then(|v| v.as_f64()) {
+                                let f_val = (lvl as f32).clamp(0.0, 1.0);
+                                let _ = state_clone.level_tx.send(f_val);
+                                state_clone.status.update_orb_level(f_val).await;
+                            }
                         }
-                    } else if msg_type == Some("tts_playback_finished") {
-                        let _ = state_clone.harness.on_tts_playback_finished().await;
+                        Some("register") => {
+                            let role = val.get("role").and_then(|r| r.as_str()).unwrap_or("unknown");
+                            state_clone.status.record_client_connect(&cid_clone, role).await;
+                            state_clone.logger.info(
+                                "client.register",
+                                "client",
+                                format!("Client {} registered as role '{}'", cid_clone, role),
+                                json!({ "client_id": &cid_clone, "role": role }),
+                            );
+                        }
+                        Some("heartbeat") => {
+                            let comp = val.get("component").and_then(|c| c.as_str()).unwrap_or("ui");
+                            let st = val.get("status").and_then(|s| s.as_str());
+                            state_clone.status.record_heartbeat(comp, st).await;
+
+                            if let Some(mic) = val.get("mic_state").and_then(|m| m.as_str()) {
+                                let reason = val.get("mic_reason").and_then(|r| r.as_str()).unwrap_or("");
+                                state_clone.status.update_mic_state(mic, reason).await;
+                            }
+                            if let Some(tts) = val.get("tts_state").and_then(|t| t.as_str()) {
+                                let sent = val.get("current_sentence").and_then(|s| s.as_u64()).unwrap_or(0) as u32;
+                                state_clone.status.update_tts_state(tts, sent).await;
+                            }
+                        }
+                        Some("component_event") => {
+                            if let Some(ev_name) = val.get("event").and_then(|e| e.as_str()) {
+                                let comp = val.get("component").and_then(|c| c.as_str()).unwrap_or("client");
+                                let message = val.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                                let payload = val.get("payload").cloned().unwrap_or(json!({}));
+                                state_clone.logger.info(ev_name, comp, message, payload);
+                            }
+                        }
+                        Some("get_status") => {
+                            let snap = state_clone.status.get_snapshot().await;
+                            let reply = json!({
+                                "type": "status_response",
+                                "data": snap
+                            });
+                            let _ = reply_tx.send(reply.to_string()).await;
+                        }
+                        Some("set_log_level") => {
+                            if let Some(lvl_str) = val.get("level").and_then(|l| l.as_str()) {
+                                if let Some(lvl) = LogLevel::from_str_loose(lvl_str) {
+                                    state_clone.logger.set_level(lvl);
+                                    state_clone.logger.info(
+                                        "config.log_level",
+                                        "config",
+                                        format!("Log level dynamically set to {}", lvl),
+                                        json!({ "level": lvl.as_str() }),
+                                    );
+                                }
+                            }
+                        }
+                        Some("tts_playback_finished") => {
+                            let _ = state_clone.harness.on_tts_playback_finished().await;
+                        }
+                        _ => {}
                     }
                 }
             }
         }
     });
 
-    // Write task: sends state changes immediately, sends level at ~50 Hz, and streams tts_chunks
+    // Write task: sends state changes immediately, sends level at ~50 Hz, streams tts_chunks, and replies
     let mut write_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(20));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
+                Some(reply) = reply_rx.recv() => {
+                    if sender.send(Message::Text(reply)).await.is_err() {
+                        break;
+                    }
+                }
                 Ok(new_state) = state_rx.recv() => {
                     let msg = json!({
                         "type": "state",
@@ -359,4 +494,12 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         _ = (&mut read_task) => write_task.abort(),
         _ = (&mut write_task) => read_task.abort(),
     }
+
+    state.status.record_client_disconnect(&client_id).await;
+    state.logger.info(
+        "client.disconnect",
+        "client",
+        format!("Client {} disconnected", client_id),
+        json!({ "client_id": &client_id }),
+    );
 }

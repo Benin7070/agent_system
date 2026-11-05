@@ -133,21 +133,36 @@ pub fn resolve_python_path() -> PathBuf {
 /// Spawns the overlay UI subprocess if not already running.
 pub async fn spawn_overlay(
     overlay_child: &Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
+    start_hidden: bool,
 ) {
-    #[cfg(test)]
-    {
-        let _ = overlay_child;
+    if std::env::var("AGENTCTL_TEST_MODE").is_ok() {
+        return;
     }
 
-    #[cfg(not(test))]
-    {
-        use std::os::unix::process::CommandExt;
+    use std::os::unix::process::CommandExt;
+
+    let mut lock = overlay_child.lock().await;
+        if let Some(ref mut child) = *lock {
+            match child.try_wait() {
+                Ok(None) => {
+                    tracing::info!("Overlay UI is already running (warm resident).");
+                    return;
+                }
+                _ => {
+                    tracing::info!("Previous overlay UI exited. Re-spawning...");
+                    *lock = None;
+                }
+            }
+        }
 
         let python = resolve_python_path();
         tracing::info!("Spawning overlay UI with Python: {}", python.display());
 
         let mut cmd = tokio::process::Command::new(&python);
         cmd.arg("-m").arg("agentctl.ui.overlay");
+        if start_hidden {
+            cmd.arg("--warm");
+        }
 
         // 1. Identify the desktop user and environment if running under sudo / root
         let is_root = unsafe { libc::getuid() } == 0;
@@ -230,7 +245,6 @@ pub async fn spawn_overlay(
 
         match cmd.spawn() {
             Ok(child) => {
-                let mut lock = overlay_child.lock().await;
                 *lock = Some(child);
             }
             Err(e) => {
@@ -238,7 +252,6 @@ pub async fn spawn_overlay(
             }
         }
     }
-}
 
 /// Core toggle logic:
 /// - If FSM is `Idle`: transition to `Listening`, log audit event, and spawn the overlay UI.
@@ -266,7 +279,7 @@ pub async fn handle_hotkey_toggle(
             )
             .await;
 
-        spawn_overlay(overlay_child).await;
+        spawn_overlay(overlay_child, false).await;
         Ok(HotkeyAction::Activated)
     } else {
         let task_id = state.fsm.get_current_task().await;
@@ -292,20 +305,9 @@ pub async fn handle_hotkey_toggle(
                 .await;
         }
 
-        let child_slot = overlay_child.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(400)).await;
-            let mut lock = child_slot.lock().await;
-            if let Some(mut child) = lock.take() {
-                match child.try_wait() {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        let _ = child.kill().await;
-                    }
-                    Err(_) => {}
-                }
-            }
-        });
+        // Note: With warm resident overlay, we do not kill the child process here.
+        // Cancelling FSM state pushes 'cancelling' -> 'idle' to the overlay via WebSocket,
+        // triggering dismiss_and_hide() while keeping the process resident for instant wakeup.
 
         Ok(HotkeyAction::Cancelled {
             from_state: prev_state.as_str().to_string(),
@@ -314,11 +316,11 @@ pub async fn handle_hotkey_toggle(
     }
 }
 
-/// Spawns a background task running the hotkey listener.
-pub fn spawn_hotkey_listener(state: Arc<AppState>) -> tokio::task::JoinHandle<()> {
-    let overlay_child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>> =
-        Arc::new(tokio::sync::Mutex::new(None));
-
+/// Spawns a background task running the hotkey listener with the provided overlay child slot.
+pub fn spawn_hotkey_listener(
+    state: Arc<AppState>,
+    overlay_child: Arc<tokio::sync::Mutex<Option<tokio::process::Child>>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         run_hotkey_listener_loop(state, overlay_child).await;
     })
@@ -447,131 +449,5 @@ fn listen_device_blocking(
                 tracing::trace!("[Hotkey] KEY_PROG2 (149) released");
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::audit::AuditLog;
-    use crate::core::gate::ApprovalGate;
-    use crate::fsm::OrchestratorFsm;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    #[test]
-    fn test_parse_proc_bus_input_devices_hp_wmi() {
-        let mock_devices = r#"
-I: Bus=0019 Vendor=0000 Product=0000 Version=0000
-N: Name="HP WMI hotkeys"
-P: Phys=wmi/input0
-S: Sysfs=/devices/virtual/input/input17
-U: Uniq=
-H: Handlers=kbd event13 
-B: PROP=0
-B: EV=33
-B: KEY=180000 20000 0 4000000000 0 101000700000000 2302400 0 0
-B: MSC=10
-B: SW=20
-
-I: Bus=0019 Vendor=0000 Product=0001 Version=0000
-N: Name="Power Button"
-P: Phys=PNP0C0C/button/input0
-S: Sysfs=/devices/platform/PNP0C0C:00/input/input1
-U: Uniq=
-H: Handlers=kbd event1 
-B: PROP=0
-B: EV=3
-B: KEY=8000 10000000000000 0
-"#;
-
-        let dev = parse_proc_bus_input_devices(mock_devices, KEY_PROG2).expect("Must find HP WMI hotkeys");
-        assert_eq!(dev.name, "HP WMI hotkeys");
-        assert_eq!(dev.path, PathBuf::from("/dev/input/event13"));
-    }
-
-    #[test]
-    fn test_parse_proc_bus_input_devices_not_found() {
-        let mock_devices = r#"
-I: Bus=0019 Vendor=0000 Product=0001 Version=0000
-N: Name="Power Button"
-P: Phys=PNP0C0C/button/input0
-S: Sysfs=/devices/platform/PNP0C0C:00/input/input1
-U: Uniq=
-H: Handlers=kbd event1 
-B: PROP=0
-B: EV=3
-B: KEY=8000 10000000000000 0
-"#;
-
-        let dev = parse_proc_bus_input_devices(mock_devices, KEY_PROG2);
-        assert!(dev.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_hotkey_toggle_idle_to_listening() {
-        let pool = SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        let audit = AuditLog::new(pool);
-        audit.init().await.unwrap();
-        let gate = ApprovalGate::new();
-        let fsm = OrchestratorFsm::new();
-        let state = AppState::new(fsm, gate, audit);
-        let overlay_slot = Arc::new(tokio::sync::Mutex::new(None));
-
-        assert_eq!(state.fsm.get_state().await, FsmState::Idle);
-
-        let action = handle_hotkey_toggle(&state, &overlay_slot)
-            .await
-            .expect("Toggle must succeed");
-
-        assert_eq!(action, HotkeyAction::Activated);
-        assert_eq!(state.fsm.get_state().await, FsmState::Listening);
-    }
-
-    #[tokio::test]
-    async fn test_hotkey_toggle_listening_to_cancel() {
-        let pool = SqlitePoolOptions::new()
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        let audit = AuditLog::new(pool);
-        audit.init().await.unwrap();
-        let gate = ApprovalGate::new();
-        let fsm = OrchestratorFsm::new();
-        let state = AppState::new(fsm, gate, audit);
-        let overlay_slot = Arc::new(tokio::sync::Mutex::new(None));
-
-        state.fsm.transition_to(FsmState::Listening).await.unwrap();
-        assert_eq!(state.fsm.get_state().await, FsmState::Listening);
-
-        let action = handle_hotkey_toggle(&state, &overlay_slot)
-            .await
-            .expect("Toggle must succeed");
-
-        match action {
-            HotkeyAction::Cancelled { from_state, .. } => {
-                assert_eq!(from_state, "LISTENING");
-            }
-            _ => panic!("Expected Cancelled action"),
-        }
-        assert_eq!(state.fsm.get_state().await, FsmState::Idle);
-    }
-
-    #[test]
-    fn test_input_event_struct_layout() {
-        let ev = libc::input_event {
-            time: libc::timeval {
-                tv_sec: 100,
-                tv_usec: 500,
-            },
-            type_: EV_KEY,
-            code: KEY_PROG2,
-            value: 1,
-        };
-        assert_eq!(ev.type_, 1);
-        assert_eq!(ev.code, 149);
-        assert_eq!(ev.value, 1);
     }
 }

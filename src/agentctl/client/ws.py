@@ -37,7 +37,7 @@ class DaemonWsClient(threading.Thread):
         self._running = True
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
-        self._outgoing_queue = asyncio.Queue(maxsize=1)
+        self._outgoing_queue = asyncio.Queue(maxsize=32)
         try:
             self._loop.run_until_complete(self._main_loop())
         except (asyncio.CancelledError, RuntimeError):
@@ -68,12 +68,14 @@ class DaemonWsClient(threading.Thread):
                     self._ws = ws
                     backoff = 0.5
                     logger.success("WS", "Connected to daemon event stream.")
+                    await ws.send(json.dumps({"type": "register", "role": "ui"}))
 
                     reader_task = asyncio.create_task(self._read_events(ws))
                     writer_task = asyncio.create_task(self._write_events(ws))
+                    heartbeat_task = asyncio.create_task(self._heartbeat_loop(ws))
 
                     done, pending = await asyncio.wait(
-                        [reader_task, writer_task],
+                        [reader_task, writer_task, heartbeat_task],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     for task in pending:
@@ -123,6 +125,41 @@ class DaemonWsClient(threading.Thread):
                 await ws.send(msg)
             except Exception:
                 break
+
+    async def _heartbeat_loop(self, ws):
+        """Sends periodic heartbeat to daemon every 1.5 seconds."""
+        while self._running:
+            try:
+                await asyncio.sleep(1.5)
+                msg = json.dumps({"type": "heartbeat", "component": "ui", "status": "up"})
+                await ws.send(msg)
+            except Exception:
+                break
+
+    def send_message(self, msg: dict):
+        """Thread-safe generic message push."""
+        if not self._running or self._loop is None or self._outgoing_queue is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(self._outgoing_queue.put_nowait, msg)
+        except Exception:
+            pass
+
+    def send_heartbeat(self, component: str = "ui", **kwargs):
+        """Sends component heartbeat with optional metadata."""
+        payload = {"type": "heartbeat", "component": component, "status": "up"}
+        payload.update(kwargs)
+        self.send_message(payload)
+
+    def send_event(self, event: str, component: str, message: str, payload: Optional[dict] = None):
+        """Emits a component event to the daemon's central telemetry logger."""
+        self.send_message({
+            "type": "component_event",
+            "event": event,
+            "component": component,
+            "message": message,
+            "payload": payload or {},
+        })
 
     def send_playback_finished(self):
         """Thread-safe notification to the daemon that TTS playback finished."""
