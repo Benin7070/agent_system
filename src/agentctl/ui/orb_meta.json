@@ -1,0 +1,23 @@
+{
+  "comp_size": 1080.0,
+  "bake_size": 512,
+  "fps": 30,
+  "frames": 474,
+  "loop_seconds": 15.8,
+  "atlas": {
+    "width": 8000,
+    "height": 840,
+    "cols": 40,
+    "rows": 12,
+    "cell_w": 200,
+    "cell_h": 70
+  },
+  "crop": {
+    "x": 118.125,
+    "y": 396.5625,
+    "w": 841.640625,
+    "h": 293.203125
+  },
+  "baseline_y": 536.4382305007267,
+  "disc_radius": 390.0
+}
