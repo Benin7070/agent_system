@@ -124,7 +124,13 @@ class EdgeGlowManager(QObject):
                 start_visible=True,
             )
             widget.make_overlay(screen)
+            geo = screen.geometry()
+            widget.setScreen(screen)
+            widget.setGeometry(geo)
+            widget.setFixedSize(geo.width(), geo.height())
             widget.show()
+            if widget.windowHandle():
+                widget.windowHandle().setScreen(screen)
             self._widgets[screen] = widget
             return widget
         except Exception as e:

@@ -228,10 +228,10 @@ class AgentOverlayWindow(QWidget):
         self.setPalette(pal)
         self.setStyleSheet("background: transparent;")
 
-        # Layout
+        # Layout: transcript pill sits above the native orb, positioned at bottom-center
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(0, 0, 0, 48)
-        self.layout.setSpacing(14)
+        self.layout.setContentsMargins(0, 0, 0, 64)
+        self.layout.setSpacing(16)
         if FULLSCREEN_OVERLAY:
             self.layout.addStretch(1)
 
