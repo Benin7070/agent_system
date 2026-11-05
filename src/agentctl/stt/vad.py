@@ -79,6 +79,7 @@ class SilenceAccumulator:
         self.total_speech_frames = 0
         self.consecutive_silent_frames = 0
         self.untranscribed_speech_frames = 0  # Delta tracking: speech frames since last Whisper call
+        self.speech_hangover = 0
         self.last_frame_speech = False
 
     def process_frame(self, frame_bytes: bytes) -> bool:
@@ -106,13 +107,18 @@ class SilenceAccumulator:
         if not self.has_spoken:
             self.pre_speech_ring.append(gated_frame)
             if speech:
-                self.has_spoken = True
-                # Prepend the ring buffer so the beginning of the first word is preserved
-                self.speech_frames.extend(self.pre_speech_ring)
-                self.speech_frames.append(gated_frame)
-                self.total_speech_frames += 1
-                self.untranscribed_speech_frames += 1
-                self.consecutive_silent_frames = 0
+                self.speech_hangover += 1
+                # Require 2 consecutive frames or strong energy to confirm intentional speech onset
+                if self.speech_hangover >= 2 or VadDetector.calculate_frame_energy(gated_frame) >= self.dynamic_speech_threshold * 1.5:
+                    self.has_spoken = True
+                    # Prepend the ring buffer so the beginning of the first word is preserved
+                    self.speech_frames.extend(self.pre_speech_ring)
+                    self.speech_frames.append(gated_frame)
+                    self.total_speech_frames += 1
+                    self.untranscribed_speech_frames += 1
+                    self.consecutive_silent_frames = 0
+            else:
+                self.speech_hangover = 0
             return False
 
         # In active speech session
@@ -120,10 +126,15 @@ class SilenceAccumulator:
 
         if speech:
             self.total_speech_frames += 1
-            self.untranscribed_speech_frames += 1
-            self.consecutive_silent_frames = 0
+            self.speech_hangover += 1
+            # Only reset silence counter and increment delta if speech has continuity
+            # (filters out isolated single-frame clicks, fan pops, or breathing bursts)
+            if self.speech_hangover >= 2:
+                self.untranscribed_speech_frames += 1
+                self.consecutive_silent_frames = 0
             return False
         else:
+            self.speech_hangover = 0
             self.consecutive_silent_frames += 1
             # Check if silence threshold reached
             if self.consecutive_silent_frames >= self.silence_threshold_frames:
@@ -166,3 +177,4 @@ class SilenceAccumulator:
         self.total_speech_frames = 0
         self.consecutive_silent_frames = 0
         self.untranscribed_speech_frames = 0
+        self.speech_hangover = 0

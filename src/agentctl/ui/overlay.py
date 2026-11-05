@@ -7,8 +7,11 @@ from typing import Optional
 
 if "QT_QPA_PLATFORM" not in os.environ:
     os.environ["QT_QPA_PLATFORM"] = "wayland;xcb"
+if "QT_LOGGING_RULES" not in os.environ:
+    os.environ["QT_LOGGING_RULES"] = "qt.qpa.wayland.textinput=false;qt.qpa.wayland*=false"
 
-from PyQt6.QtCore import QPoint, QPropertyAnimation, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QLoggingCategory, QPoint, QPropertyAnimation, QRect, Qt, QTimer, pyqtSignal
+QLoggingCategory.setFilterRules("qt.qpa.wayland.textinput=false\nqt.qpa.wayland*=false")
 from PyQt6.QtGui import QColor, QGuiApplication, QKeyEvent, QPainter, QPalette, QPixmap
 from PyQt6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
@@ -21,6 +24,7 @@ from agentctl.config import (
     ORB_SIZE,
     SILENCE_CUTOFF_MS,
     USE_FAKE_LEVEL,
+    harness as harness_config,
 )
 
 from agentctl.client.daemon import DaemonClient
@@ -29,6 +33,7 @@ from agentctl.logger import logger
 from agentctl.stt.engine import SttEngine
 from agentctl.stt.microphone import MicrophoneStream
 from agentctl.stt.vad import SilenceAccumulator
+from agentctl.tts import KokoroTtsEngine, TtsPlaybackWorker
 from agentctl.ui.edge_glow import EdgeGlowManager
 from agentctl.ui.orb import OrbWidget
 from agentctl.ui.screens import get_active_screen
@@ -135,13 +140,13 @@ class SttWorker(threading.Thread):
                 last_audio_log = now
 
             # Delta-Speech Gated partial transcription:
-            # Triggers after 240ms of NEW speech frames (rapid live interim results).
+            # Triggers after 480ms of confirmed NEW speech frames (rapid live interim results).
             # Never triggers during silence, keeping CPU usage near 0% when quiet.
             if (
                 self.vad.has_spoken
                 and not self._is_transcribing
                 and self._running
-                and self.vad.should_trigger_partial(min_new_speech_ms=240)
+                and self.vad.should_trigger_partial(min_new_speech_ms=480)
             ):
                 self._is_transcribing = True
                 audio_snapshot = self.vad.get_speech_audio_bytes()
@@ -171,8 +176,6 @@ class SttWorker(threading.Thread):
             if silence_triggered:
                 thresh_ms = self.vad.silence_threshold_frames * self.vad.frame_duration_ms
                 logger.vad(f"Silence threshold ({thresh_ms}ms) reached! Total speech: {self.vad.total_speech_frames * 20}ms.")
-                self._running = False
-                self.mic.stop()
                 if self._partial_thread and self._partial_thread.is_alive():
                     self._partial_thread.join(timeout=0.6)
 
@@ -188,7 +191,10 @@ class SttWorker(threading.Thread):
                     self.on_final(final)
                 else:
                     logger.warn("WHISPER", f"<<< Final result in {elapsed:.2f}s was empty.")
-                break
+
+                # Re-arm VAD for next turn in multi-turn conversation loop
+                self.vad.reset()
+                was_spoken = False
 
     def stop(self):
         self._running = False
@@ -204,6 +210,8 @@ class AgentOverlayWindow(QWidget):
     ws_state_signal = pyqtSignal(str)
     ws_level_signal = pyqtSignal(float)
     ws_opacity_signal = pyqtSignal(float)
+    tts_chunk_signal = pyqtSignal(str, bool)
+    exit_signal = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -256,15 +264,28 @@ class AgentOverlayWindow(QWidget):
         self.ws_state_signal.connect(self._handle_ws_state)
         self.ws_level_signal.connect(self._handle_ws_level)
         self.ws_opacity_signal.connect(self._handle_ws_opacity)
+        self.tts_chunk_signal.connect(self._handle_tts_chunk)
+        self.exit_signal.connect(self._handle_exit)
         self.orb.closed.connect(self._on_exit_finished)
 
         self.stt_worker: Optional[SttWorker] = None
         self._is_closing = False
 
+        # Kokoro TTS engine and streaming audio player
+        self.tts_engine = KokoroTtsEngine()
+        self.tts_player = TtsPlaybackWorker(
+            mic_stream=None,
+            on_level=lambda lvl: self._handle_tts_level(lvl),
+            on_finished=lambda: self.ws_client.send_playback_finished() if hasattr(self, "ws_client") else None,
+        )
+        self.tts_player.start()
+
         # WebSocket push client (replaces polling timer)
         self.ws_client = DaemonWsClient(
             on_state=self.ws_state_signal.emit,
             on_level=lambda v: self.ws_level_signal.emit(float(v)),
+            on_tts_chunk=lambda sentence, is_final: self.tts_chunk_signal.emit(sentence, is_final),
+            on_exit=lambda goodbye_msg: self.exit_signal.emit(goodbye_msg),
         )
         self.ws_client.start()
 
@@ -322,6 +343,9 @@ class AgentOverlayWindow(QWidget):
         else:
             self.orb.set_state(state_name)
             self.edge_glow.set_state(state_name)
+            if state_name == "listening":
+                self.transcript_card.set_transcript("Listening...")
+                self.transcript_card.animate_in()
 
     def _handle_ws_level(self, level: float):
         """Sets smoothed reactive audio/activity level on the orb and border."""
@@ -368,6 +392,7 @@ class AgentOverlayWindow(QWidget):
             ws_client=self.ws_client,
         )
         self.stt_worker.start()
+        self.tts_player.mic = self.stt_worker.mic
 
     def _handle_partial_transcript(self, text: str):
         self.transcript_card.set_transcript(text)
@@ -385,53 +410,69 @@ class AgentOverlayWindow(QWidget):
         self.orb.set_state("thinking")
         self.edge_glow.set_state("thinking")
 
-        # Send intent to daemon
+        # Send intent to daemon for harness processing
         try:
             self.client.send_intent(text)
         except Exception as e:
             logger.warn("UI", f"Send intent error: {e}")
 
-        # Simulate completion flash then clean exit
-        QTimer.singleShot(1400, self.finish_success_and_exit)
+    def _handle_tts_chunk(self, sentence: str, is_final: bool):
+        """Receives a finished sentence from daemon LLM stream, synthesizes & enqueues for immediate playback."""
+        if self._is_closing or not sentence.strip():
+            return
+        self.transcript_card.set_transcript(sentence)
+        try:
+            samples, sr = self.tts_engine.synthesize(sentence)
+            self.tts_player.enqueue_sentence(samples, sr, is_final)
+        except Exception as e:
+            logger.error("TTS", f"Error synthesizing speech: {e}")
 
-    def finish_success_and_exit(self):
-        """Natural completion path: plays closing animation then exits."""
+    def _handle_tts_level(self, level: float):
+        """Live audio loudness meter update during speech playback."""
+        if not self._is_closing:
+            self.orb.set_level(level)
+            self.edge_glow.set_level(level)
+
+    def _handle_exit(self, goodbye_msg: str):
+        """Exit phrase detected by daemon."""
+        self.end_session(goodbye_msg)
+
+    def end_session(self, goodbye_msg: Optional[str] = None):
+        """Unified session exit: speaks goodbye, plays closing animation, and exits cleanly."""
         if self._is_closing:
             return
-        logger.success("UI", "Intent processed. Dismissing orb...")
+        logger.info("UI", "Session end: playing goodbye line then dismissing overlay...")
         self._is_closing = True
+
+        msg = goodbye_msg or "Goodbye!"
+        try:
+            samples, sr = self.tts_engine.synthesize(msg)
+            import sounddevice as sd
+            sd.play(samples, sr)
+            sd.wait()
+        except Exception as e:
+            logger.warn("TTS", f"Could not play goodbye audio: {e}")
+
         if self.stt_worker:
             self.stt_worker.stop()
+        if hasattr(self, "tts_player") and self.tts_player:
+            self.tts_player.stop()
 
         self.transcript_card.animate_out()
         self.orb.play_closing()
         self.edge_glow.play_closing()
 
-        # Safety timer in case compositor drops signal
+        # Clean exit after closing animation finishes
         QTimer.singleShot(800, self._on_exit_finished)
 
     def cancel_and_exit(self):
         """Hotkey re-press or Esc cancellation path."""
-        if self._is_closing:
-            return
-        logger.info("UI", "Overlay cancelled. Dismissing orb...")
-        self._is_closing = True
-
-        if self.stt_worker:
-            self.stt_worker.stop()
-
         try:
             self.client.cancel()
         except Exception as e:
             logger.warn("UI", f"Cancel request error: {e}")
 
-        self.transcript_card.set_discarded()
-        self.transcript_card.animate_out()
-        self.orb.play_closing()
-        self.edge_glow.play_closing()
-
-        # Safety timer in case compositor drops signal
-        QTimer.singleShot(800, self._on_exit_finished)
+        self.end_session()
 
     def _on_exit_finished(self):
         """Clean teardown: stops timers, workers, and immediately releases all memory."""

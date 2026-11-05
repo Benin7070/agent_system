@@ -18,11 +18,15 @@ class DaemonWsClient(threading.Thread):
         self,
         on_state: Callable[[str], None],
         on_level: Callable[[float], None],
+        on_tts_chunk: Optional[Callable[[str, bool], None]] = None,
+        on_exit: Optional[Callable[[str], None]] = None,
         socket_path: Optional[Path] = None,
     ):
         super().__init__(daemon=True)
         self.on_state = on_state
         self.on_level = on_level
+        self.on_tts_chunk = on_tts_chunk
+        self.on_exit = on_exit
         self.socket_path = socket_path or SOCKET_PATH
         self._running = False
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -94,6 +98,13 @@ class DaemonWsClient(threading.Thread):
                     elif msg_type == "level":
                         level_val = float(data.get("value", 0.0))
                         self.on_level(level_val)
+                    elif msg_type == "tts_chunk" and self.on_tts_chunk:
+                        sentence = data.get("sentence", "")
+                        is_final = bool(data.get("is_final", False))
+                        self.on_tts_chunk(sentence, is_final)
+                    elif msg_type == "exit" and self.on_exit:
+                        goodbye_msg = data.get("goodbye_msg", "Goodbye!")
+                        self.on_exit(goodbye_msg)
                 except Exception as e:
                     logger.warn("WS", f"Failed to parse incoming WS message: {e}")
         except (websockets.exceptions.ConnectionClosed, asyncio.CancelledError):
@@ -101,12 +112,29 @@ class DaemonWsClient(threading.Thread):
 
     async def _write_events(self, ws):
         while self._running:
-            val = await self._outgoing_queue.get()
+            item = await self._outgoing_queue.get()
             try:
-                msg = json.dumps({"type": "level", "value": val})
+                if isinstance(item, (int, float)):
+                    msg = json.dumps({"type": "level", "value": item})
+                elif isinstance(item, dict):
+                    msg = json.dumps(item)
+                else:
+                    continue
                 await ws.send(msg)
             except Exception:
                 break
+
+    def send_playback_finished(self):
+        """Thread-safe notification to the daemon that TTS playback finished."""
+        if not self._running or self._loop is None or self._outgoing_queue is None:
+            return
+        try:
+            self._loop.call_soon_threadsafe(
+                self._outgoing_queue.put_nowait,
+                {"type": "tts_playback_finished"}
+            )
+        except Exception:
+            pass
 
     def send_level(self, level: float):
         """Thread-safe level push to the daemon. Discards stale levels if queue is full."""

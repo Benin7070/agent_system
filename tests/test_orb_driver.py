@@ -20,6 +20,24 @@ from agentctl.client.daemon import DaemonClient, get_socket_path
 from agentctl.client.ws import DaemonWsClient
 
 
+def _is_daemon_active() -> bool:
+    import socket
+    path = get_socket_path()
+    if not path.exists():
+        return False
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(str(path))
+        s.close()
+        return True
+    except OSError:
+        return False
+
+
+daemon_running = _is_daemon_active()
+
+
+@pytest.mark.skipif(not daemon_running, reason="Daemon socket not found; daemon is not running")
 @pytest.mark.anyio
 async def test_state_and_level_sweep():
     """(a) Drives daemon through all states and sweeps level from 0.0 to 1.0."""
@@ -79,6 +97,7 @@ async def test_state_and_level_sweep():
     assert any(lvl > 0.5 for lvl in received_levels)
 
 
+@pytest.mark.skipif(not daemon_running, reason="Daemon socket not found; daemon is not running")
 @pytest.mark.anyio
 async def test_stale_levels_dropped():
     """(b) Verifies that rapid bursts of levels are conflated and stale ones dropped."""
@@ -113,6 +132,7 @@ async def test_stale_levels_dropped():
         assert any(abs(v - 0.95) < 0.05 for v in received), "Latest level must be delivered"
 
 
+@pytest.mark.skipif(not daemon_running, reason="Daemon socket not found; daemon is not running")
 def test_ui_daemon_reconnect():
     """(c) Verifies that DaemonWsClient automatically reconnects after daemon restarts."""
     socket_path = get_socket_path()

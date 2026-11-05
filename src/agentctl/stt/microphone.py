@@ -14,11 +14,31 @@ class MicrophoneStream:
         self.queue: queue.Queue = queue.Queue()
         self.stream: Optional[sd.RawInputStream] = None
         self._running = False
+        self._paused = False
 
     def _callback(self, indata, frames, time_info, status):
         if status:
             pass
-        self.queue.put(bytes(indata))
+        if not self._paused:
+            self.queue.put(bytes(indata))
+
+    def pause(self):
+        """Temporarily pauses capturing (e.g. while assistant is speaking)."""
+        self._paused = True
+        self.flush()
+
+    def resume(self):
+        """Resumes capturing after speech playback completes."""
+        self.flush()
+        self._paused = False
+
+    def flush(self):
+        """Flushes any accumulated audio frames in the queue."""
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                break
 
     def start(self):
         if self._running:

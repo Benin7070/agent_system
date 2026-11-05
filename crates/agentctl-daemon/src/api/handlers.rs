@@ -6,6 +6,7 @@ use crate::core::schemas::{
 };
 use crate::fsm::states::FsmState;
 use crate::fsm::OrchestratorFsm;
+use crate::harness::session::{HarnessConfig, HarnessSession, SessionEvent};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -16,7 +17,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -24,16 +25,35 @@ pub struct AppState {
     pub gate: ApprovalGate,
     pub audit: AuditLog,
     pub level_tx: watch::Sender<f32>,
+    pub harness: Arc<HarnessSession>,
+    pub session_event_tx: broadcast::Sender<SessionEvent>,
 }
 
 impl AppState {
     pub fn new(fsm: OrchestratorFsm, gate: ApprovalGate, audit: AuditLog) -> Self {
         let (level_tx, _) = watch::channel(0.0f32);
+        let (session_event_tx, _) = broadcast::channel(64);
+
+        let agent_name = std::env::var("AGENTCTL_AGENT_NAME").unwrap_or_else(|_| "Bella".to_string());
+        let user_name = std::env::var("AGENTCTL_USER_NAME")
+            .or_else(|_| std::env::var("SUDO_USER"))
+            .or_else(|_| std::env::var("USER"))
+            .unwrap_or_else(|_| "Benin".to_string());
+
+        let harness_config = HarnessConfig {
+            agent_name,
+            user_name,
+            ..Default::default()
+        };
+        let harness = Arc::new(HarnessSession::new(harness_config, fsm.clone(), None));
+
         Self {
             fsm,
             gate,
             audit,
             level_tx,
+            harness,
+            session_event_tx,
         }
     }
 }
@@ -128,6 +148,23 @@ pub async fn intent_handler(
             }),
         )
         .await;
+
+    // Dispatch utterance to the harness conversation session
+    let harness = state.harness.clone();
+    let session_tx = state.session_event_tx.clone();
+    let text = payload.text.clone();
+    tokio::spawn(async move {
+        let (mpsc_tx, mut mpsc_rx) = tokio::sync::mpsc::channel(32);
+        let forwarder = tokio::spawn(async move {
+            while let Some(evt) = mpsc_rx.recv().await {
+                let _ = session_tx.send(evt);
+            }
+        });
+        if let Err(e) = harness.handle_user_utterance(&text, mpsc_tx).await {
+            tracing::error!("Harness utterance error: {}", e);
+        }
+        let _ = forwarder.await;
+    });
 
     Json(ApiResponse::success(StatusResponse {
         state: "PROCESSING".to_string(),
@@ -243,6 +280,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
     let mut state_rx = state.fsm.subscribe_state();
     let mut level_rx = state.level_tx.subscribe();
+    let mut session_event_rx = state.session_event_tx.subscribe();
 
     // Spawn reader task to handle incoming client messages (e.g., client level pushes or pings)
     let state_clone = state.clone();
@@ -250,17 +288,20 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
         while let Some(Ok(msg)) = receiver.next().await {
             if let Message::Text(text) = msg {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if val.get("type").and_then(|t| t.as_str()) == Some("level") {
+                    let msg_type = val.get("type").and_then(|t| t.as_str());
+                    if msg_type == Some("level") {
                         if let Some(lvl) = val.get("value").and_then(|v| v.as_f64()) {
                             let _ = state_clone.level_tx.send((lvl as f32).clamp(0.0, 1.0));
                         }
+                    } else if msg_type == Some("tts_playback_finished") {
+                        let _ = state_clone.harness.on_tts_playback_finished().await;
                     }
                 }
             }
         }
     });
 
-    // Write task: sends state changes immediately, and sends level at ~50 Hz (20ms ticker)
+    // Write task: sends state changes immediately, sends level at ~50 Hz, and streams tts_chunks
     let mut write_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(20));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -274,6 +315,30 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
                     });
                     if sender.send(Message::Text(msg.to_string())).await.is_err() {
                         break;
+                    }
+                }
+                Ok(session_evt) = session_event_rx.recv() => {
+                    match session_evt {
+                        SessionEvent::SentenceReady { sentence, is_final } => {
+                            let msg = json!({
+                                "type": "tts_chunk",
+                                "sentence": sentence,
+                                "is_final": is_final
+                            });
+                            if sender.send(Message::Text(msg.to_string())).await.is_err() {
+                                break;
+                            }
+                        }
+                        SessionEvent::ExitTriggered { goodbye_msg } => {
+                            let msg = json!({
+                                "type": "exit",
+                                "goodbye_msg": goodbye_msg
+                            });
+                            if sender.send(Message::Text(msg.to_string())).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 _ = interval.tick() => {

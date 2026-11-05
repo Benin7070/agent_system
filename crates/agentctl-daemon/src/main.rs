@@ -47,9 +47,85 @@ fn get_db_path() -> PathBuf {
     }
 }
 
+fn load_dotenv() {
+    let mut candidate_paths = Vec::new();
+
+    // 1. Current working directory .env
+    candidate_paths.push(PathBuf::from(".env"));
+
+    // 2. Relative to executable path
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            candidate_paths.push(parent.join(".env"));
+            if let Some(grandparent) = parent.parent() {
+                candidate_paths.push(grandparent.join(".env"));
+                if let Some(root) = grandparent.parent() {
+                    candidate_paths.push(root.join(".env"));
+                }
+            }
+        }
+    }
+
+    // 3. User config ~/.config/agentctl/.env or /home/$SUDO_USER/.config/agentctl/.env
+    if let Ok(sudo_user) = env::var("SUDO_USER") {
+        candidate_paths.push(PathBuf::from(format!("/home/{}/.config/agentctl/.env", sudo_user)));
+        candidate_paths.push(PathBuf::from(format!("/home/{}/Programming/agents/.env", sudo_user)));
+    }
+    if let Ok(home) = env::var("HOME") {
+        candidate_paths.push(PathBuf::from(home).join(".config").join("agentctl").join(".env"));
+    }
+
+    for path in candidate_paths {
+        if path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                let mut loaded = 0;
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    if let Some((key, val)) = trimmed.split_once('=') {
+                        let key = key.trim();
+                        let mut val = val.trim();
+                        if (val.starts_with('"') && val.ends_with('"'))
+                            || (val.starts_with('\'') && val.ends_with('\''))
+                        {
+                            if val.len() >= 2 {
+                                val = &val[1..val.len() - 1];
+                            }
+                        }
+                        if !key.is_empty()
+                            && !val.is_empty()
+                            && (env::var(key).is_err()
+                                || env::var(key).map(|v| v.is_empty()).unwrap_or(false))
+                        {
+                            env::set_var(key, val);
+                            loaded += 1;
+                        }
+                    }
+                }
+                println!("[Config] Loaded {} environment variables from {}", loaded, path.display());
+                break;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    load_dotenv();
     tracing_subscriber::fmt::init();
+
+    if let Ok(key) = env::var("OPENAI_API_KEY") {
+        let key_trimmed = key.trim();
+        if !key_trimmed.is_empty() {
+            println!("[Config] OpenAI API key detected ({} chars).", key_trimmed.len());
+        } else {
+            println!("[Config] Warning: OPENAI_API_KEY is empty in .env.");
+        }
+    } else {
+        println!("[Config] Warning: No OPENAI_API_KEY found in environment or .env.");
+    }
 
     let args: Vec<String> = env::args().collect();
     if args.len() > 1 && args[1] == "kill" {
