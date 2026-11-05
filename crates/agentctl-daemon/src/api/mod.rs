@@ -41,11 +41,37 @@ pub async fn run_uds_server(state: Arc<AppState>, socket_path: &Path) -> std::io
 
     let listener = UnixListener::bind(socket_path)?;
 
-    // Set socket permissions to 0600 (owner only)
+    // Set socket permissions to 0666 and chown to SUDO_UID if running under sudo
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o666));
+
+        let uid = unsafe { libc::getuid() };
+        if uid == 0 {
+            if let Ok(sudo_uid) = std::env::var("SUDO_UID") {
+                if let Ok(target_uid) = sudo_uid.parse::<u32>() {
+                    let target_gid = std::env::var("SUDO_GID")
+                        .ok()
+                        .and_then(|g| g.parse::<u32>().ok())
+                        .unwrap_or(target_uid);
+
+                    use std::os::unix::ffi::OsStrExt;
+                    if let Some(parent) = socket_path.parent() {
+                        if let Ok(c_parent) = std::ffi::CString::new(parent.as_os_str().as_bytes()) {
+                            unsafe {
+                                libc::chown(c_parent.as_ptr(), target_uid, target_gid);
+                            }
+                        }
+                    }
+                    if let Ok(c_path) = std::ffi::CString::new(socket_path.as_os_str().as_bytes()) {
+                        unsafe {
+                            libc::chown(c_path.as_ptr(), target_uid, target_gid);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let app = create_router(state);
