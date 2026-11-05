@@ -29,7 +29,6 @@ from agentctl.logger import logger
 from agentctl.stt.engine import SttEngine
 from agentctl.stt.microphone import MicrophoneStream
 from agentctl.stt.vad import SilenceAccumulator
-from agentctl.ui.border_widget import BorderWidget
 from agentctl.ui.edge_glow import EdgeGlowManager
 from agentctl.ui.orb import OrbWidget
 from agentctl.ui.screens import get_active_screen
@@ -229,16 +228,6 @@ class AgentOverlayWindow(QWidget):
         self.setPalette(pal)
         self.setStyleSheet("background: transparent;")
 
-        # ---- Full-screen border glow (absolute-positioned sibling) ----
-        self.border = BorderWidget(self)
-        self.border.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
-        self.border.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.border.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
-        self.border.setAutoFillBackground(False)
-        self.border.setStyleSheet("background: transparent; border: none; outline: none;")
-        self.border.setGeometry(0, 0, 1920, 1080)
-        self.border.lower()
-
         # Layout
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 48)
@@ -333,20 +322,15 @@ class AgentOverlayWindow(QWidget):
         else:
             self.orb.set_state(state_name)
             self.edge_glow.set_state(state_name)
-            if hasattr(self, "border"):
-                self.border.set_state(state_name)
 
     def _handle_ws_level(self, level: float):
         """Sets smoothed reactive audio/activity level on the orb and border."""
         if not self._is_closing:
             self.orb.set_level(level)
             self.edge_glow.set_level(level)
-            if hasattr(self, "border"):
-                self.border.set_level(level)
 
     def _handle_ws_opacity(self, value: float):
-        if hasattr(self, "border"):
-            self.border.set_opacity(value)
+        pass
 
     def activate_and_show(self):
         """Wakes up the overlay, starts listening, and triggers one-shot opening pop."""
@@ -374,9 +358,6 @@ class AgentOverlayWindow(QWidget):
         # One-shot pop-in animation on orb, edge border glow, and smooth text box entrance
         self.orb.play_opening()
         self.edge_glow.play_opening()
-        if hasattr(self, "border"):
-            self.border.set_state("listening")
-            self.border.set_opacity(1.0)
         self.transcript_card.animate_in()
 
         # Start STT background worker
@@ -397,16 +378,12 @@ class AgentOverlayWindow(QWidget):
             return
         self.orb.set_level(intensity)
         self.edge_glow.set_level(intensity)
-        if hasattr(self, "border"):
-            self.border.set_level(intensity)
 
     def _handle_final_transcript(self, text: str):
         self.transcript_card.set_transcript(text)
         self.transcript_card.set_submitted()
         self.orb.set_state("thinking")
         self.edge_glow.set_state("thinking")
-        if hasattr(self, "border"):
-            self.border.set_state("thinking")
 
         # Send intent to daemon
         try:
@@ -426,8 +403,6 @@ class AgentOverlayWindow(QWidget):
         if self.stt_worker:
             self.stt_worker.stop()
 
-        if hasattr(self, "border"):
-            self.border.set_opacity(0.0)
         self.transcript_card.animate_out()
         self.orb.play_closing()
         self.edge_glow.play_closing()
@@ -450,8 +425,6 @@ class AgentOverlayWindow(QWidget):
         except Exception as e:
             logger.warn("UI", f"Cancel request error: {e}")
 
-        if hasattr(self, "border"):
-            self.border.set_opacity(0.0)
         self.transcript_card.set_discarded()
         self.transcript_card.animate_out()
         self.orb.play_closing()

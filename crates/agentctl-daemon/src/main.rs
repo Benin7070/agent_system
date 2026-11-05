@@ -11,10 +11,24 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 fn get_socket_path() -> PathBuf {
+    // When running as root (e.g. sudo), prefer SUDO_UID's runtime dir so the
+    // UI subprocess (which runs as the real user) can connect to the same socket.
+    let uid = unsafe { libc::getuid() };
+    if uid == 0 {
+        if let Ok(sudo_uid) = env::var("SUDO_UID") {
+            if let Ok(n) = sudo_uid.parse::<u32>() {
+                let runtime = PathBuf::from(format!("/run/user/{}", n));
+                if runtime.exists() {
+                    let dir = runtime.join("agentctl");
+                    let _ = std::fs::create_dir_all(&dir);
+                    return dir.join("daemon.sock");
+                }
+            }
+        }
+    }
     if let Ok(runtime_dir) = env::var("XDG_RUNTIME_DIR") {
         PathBuf::from(runtime_dir).join("agentctl").join("daemon.sock")
     } else {
-        let uid = unsafe { libc::getuid() };
         PathBuf::from(format!("/tmp/agentctl-{}/daemon.sock", uid))
     }
 }
