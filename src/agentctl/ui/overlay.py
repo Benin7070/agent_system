@@ -30,6 +30,7 @@ from agentctl.stt.engine import SttEngine
 from agentctl.stt.microphone import MicrophoneStream
 from agentctl.stt.vad import SilenceAccumulator
 from agentctl.ui.border_widget import BorderWidget
+from agentctl.ui.edge_glow import EdgeGlowManager
 from agentctl.ui.orb import OrbWidget
 from agentctl.ui.screens import get_active_screen
 from agentctl.ui.transcript import TranscriptCard
@@ -251,6 +252,7 @@ class AgentOverlayWindow(QWidget):
 
         # 2. Native OrbWidget
         self.orb = OrbWidget(ORB_ASSETS_DIR, orb_size=ORB_SIZE, start_visible=True)
+        self.edge_glow = EdgeGlowManager(ORB_ASSETS_DIR)
         self.orb.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)
         self.orb.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.orb.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -330,6 +332,7 @@ class AgentOverlayWindow(QWidget):
             self.cancel_and_exit()
         else:
             self.orb.set_state(state_name)
+            self.edge_glow.set_state(state_name)
             if hasattr(self, "border"):
                 self.border.set_state(state_name)
 
@@ -337,6 +340,7 @@ class AgentOverlayWindow(QWidget):
         """Sets smoothed reactive audio/activity level on the orb and border."""
         if not self._is_closing:
             self.orb.set_level(level)
+            self.edge_glow.set_level(level)
             if hasattr(self, "border"):
                 self.border.set_level(level)
 
@@ -369,6 +373,7 @@ class AgentOverlayWindow(QWidget):
 
         # One-shot pop-in animation on orb, edge border glow, and smooth text box entrance
         self.orb.play_opening()
+        self.edge_glow.play_opening()
         if hasattr(self, "border"):
             self.border.set_state("listening")
             self.border.set_opacity(1.0)
@@ -391,6 +396,7 @@ class AgentOverlayWindow(QWidget):
         if USE_FAKE_LEVEL:
             return
         self.orb.set_level(intensity)
+        self.edge_glow.set_level(intensity)
         if hasattr(self, "border"):
             self.border.set_level(intensity)
 
@@ -398,6 +404,7 @@ class AgentOverlayWindow(QWidget):
         self.transcript_card.set_transcript(text)
         self.transcript_card.set_submitted()
         self.orb.set_state("thinking")
+        self.edge_glow.set_state("thinking")
         if hasattr(self, "border"):
             self.border.set_state("thinking")
 
@@ -423,6 +430,7 @@ class AgentOverlayWindow(QWidget):
             self.border.set_opacity(0.0)
         self.transcript_card.animate_out()
         self.orb.play_closing()
+        self.edge_glow.play_closing()
 
         # Safety timer in case compositor drops signal
         QTimer.singleShot(800, self._on_exit_finished)
@@ -447,6 +455,7 @@ class AgentOverlayWindow(QWidget):
         self.transcript_card.set_discarded()
         self.transcript_card.animate_out()
         self.orb.play_closing()
+        self.edge_glow.play_closing()
 
         # Safety timer in case compositor drops signal
         QTimer.singleShot(800, self._on_exit_finished)
@@ -457,6 +466,8 @@ class AgentOverlayWindow(QWidget):
             self.stt_worker.stop()
         if hasattr(self, "ws_client") and self.ws_client:
             self.ws_client.stop()
+        if hasattr(self, "edge_glow"):
+            self.edge_glow.close()
         self.close()
         app = QApplication.instance()
         if app:
